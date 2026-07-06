@@ -1,0 +1,2 @@
+time,dist,rmse,sigh,dx_std,angle_mean,angle_std,not_on_line_count,not_looking_count,not_looking_frame
+ 513.405800, 175.784270,   0.130875,1139,   0.003471,   5.698798,   6.241878,59,188,10438

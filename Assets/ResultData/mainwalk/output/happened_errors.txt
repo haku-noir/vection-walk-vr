@@ -1,0 +1,11 @@
+{
+    "shiroyama0_walk_results_LRUD20240203_152345.csv": "done",
+    "shiroyama_walk_results_20240204_152314.csv": "done",
+    "shiroyama_walk_results_FB20240204_163903.csv": "done",
+    "shiroyama_walk_results_LR20240204_161549.csv": "done",
+    "shiroyama_walk_results_LRFB20240204_160432.csv": "done",
+    "shiroyama_walk_results_LRUD20240204_172613.csv": "done",
+    "shiroyama_walk_results_LRUDFB20240204_162635.csv": "done",
+    "shiroyama_walk_results_UD20240204_171408.csv": "done",
+    "shiroyama_walk_results_UDFB20240204_165801.csv": "done"
+}
