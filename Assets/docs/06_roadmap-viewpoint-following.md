@@ -1,5 +1,9 @@
 # 06. 視点追従実験への改造ロードマップ
 
+> **📌 このロードマップは実装済み**（`Assets/scripts/ViewpointFollowing/` と
+> `ViewpointFollowing.unity` シーン）。使い方は [07_viewpoint-following-experiment.md](07_viewpoint-following-experiment.md) を参照。
+> 本ドキュメントは設計判断の背景資料として残している。
+
 ## 実験の想定（要件）
 
 - 事前に **VR空間内を歩行した際の映像（視点）を収録**しておく。

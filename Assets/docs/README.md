@@ -1,7 +1,7 @@
 # プロジェクトドキュメント
 
-視野反転VR実験プロジェクト（先輩から引き継ぎ）のドキュメント集です。
-今後このプロジェクトを基に **視点追従実験** へ改造することを前提に整理しています。
+視野反転VR実験プロジェクト（先輩から引き継ぎ）と、それを基に実装した
+**視点追従実験** のドキュメント集です。
 
 ## ドキュメント一覧
 
@@ -9,10 +9,11 @@
 |---|---|
 | [01_project-overview.md](01_project-overview.md) | プロジェクト概要・開発環境・フォルダ構成・セットアップ手順 |
 | [02_architecture.md](02_architecture.md) | VR映像パイプライン（視野反転の仕組み）と Player プレハブの構造 |
-| [03_scripts-reference.md](03_scripts-reference.md) | 全スクリプトのリファレンス |
-| [04_scenes-and-experiments.md](04_scenes-and-experiments.md) | シーン一覧・実験の実行方法・操作方法 |
+| [03_scripts-reference.md](03_scripts-reference.md) | 全スクリプトのリファレンス（視野反転系） |
+| [04_scenes-and-experiments.md](04_scenes-and-experiments.md) | シーン一覧・実験の実行方法・操作方法（視野反転系） |
 | [05_data-and-analysis.md](05_data-and-analysis.md) | 計測データのCSV形式・保存先・解析スクリプト |
-| [06_roadmap-viewpoint-following.md](06_roadmap-viewpoint-following.md) | 視点追従実験への改造ロードマップ（流用可能な資産と新規開発項目） |
+| [06_roadmap-viewpoint-following.md](06_roadmap-viewpoint-following.md) | 視点追従実験への改造ロードマップ（設計の背景・方針） |
+| [07_viewpoint-following-experiment.md](07_viewpoint-following-experiment.md) | **視点追従実験の使い方・データ形式・実装構成（本体）** |
 
 ## 原典資料
 
@@ -22,5 +23,5 @@
 ## まず読むべきもの
 
 1. 初めてこのプロジェクトを触る人 → `01_project-overview.md` → `02_architecture.md`
-2. 実験を再現したい人 → `04_scenes-and-experiments.md` → `05_data-and-analysis.md`
-3. 視点追従実験の開発を始める人 → `02_architecture.md` → `06_roadmap-viewpoint-following.md`
+2. 視野反転実験を再現したい人 → `04_scenes-and-experiments.md` → `05_data-and-analysis.md`
+3. **視点追従実験を実施・開発する人** → `07_viewpoint-following-experiment.md`（設計の背景は `06`）
