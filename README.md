@@ -35,21 +35,22 @@ Unity Hub で 2021.3.45f2 を入れてプロジェクトを開く。
 
 データは エディタ実行時 `Assets/ResultData/following/`、実機ビルド時 `Android/data/<プロダクト名>/files/following/` に CSV で保存される。
 
-詳細な使い方・データ形式・実装構成 → **[Assets/docs/07_viewpoint-following-experiment.md](Assets/docs/07_viewpoint-following-experiment.md)**
+詳細な使い方・データ形式・実装構成 → **[docs/viewpoint-following/07_viewpoint-following-experiment.md](docs/viewpoint-following/07_viewpoint-following-experiment.md)**
 
 ## ドキュメント
 
-プロジェクト全体のドキュメントは [`Assets/docs/`](Assets/docs/README.md) にある。
+プロジェクト全体のドキュメントは [`docs/`](docs/README.md) にある。
+（前任者の視野反転プロジェクトの説明は `docs/reversed-vision/`、視点追従実験は `docs/viewpoint-following/`）
 
 | ドキュメント | 内容 |
 |---|---|
-| [01 概要](Assets/docs/01_project-overview.md) | 開発環境・フォルダ構成・既知の問題 |
-| [02 アーキテクチャ](Assets/docs/02_architecture.md) | VR映像パイプラインと Player プレハブの構造 |
-| [03 スクリプト](Assets/docs/03_scripts-reference.md) | 全スクリプトのリファレンス |
-| [04 シーンと実験](Assets/docs/04_scenes-and-experiments.md) | 視野反転実験のシーン一覧・操作方法 |
-| [05 データと解析](Assets/docs/05_data-and-analysis.md) | CSV形式・保存先・解析スクリプト |
-| [06 ロードマップ](Assets/docs/06_roadmap-viewpoint-following.md) | 視点追従実験の設計方針 |
-| [07 視点追従実験](Assets/docs/07_viewpoint-following-experiment.md) | **視点追従実験の使い方・構成（本体）** |
+| [01 概要](docs/reversed-vision/01_project-overview.md) | 開発環境・フォルダ構成・既知の問題 |
+| [02 アーキテクチャ](docs/reversed-vision/02_architecture.md) | VR映像パイプラインと Player プレハブの構造 |
+| [03 スクリプト](docs/reversed-vision/03_scripts-reference.md) | 全スクリプトのリファレンス |
+| [04 シーンと実験](docs/reversed-vision/04_scenes-and-experiments.md) | 視野反転実験のシーン一覧・操作方法 |
+| [05 データと解析](docs/reversed-vision/05_data-and-analysis.md) | CSV形式・保存先・解析スクリプト |
+| [06 ロードマップ](docs/viewpoint-following/06_roadmap-viewpoint-following.md) | 視点追従実験の設計方針 |
+| [07 視点追従実験](docs/viewpoint-following/07_viewpoint-following-experiment.md) | **視点追従実験の使い方・構成（本体）** |
 
 ## リポジトリ運用
 

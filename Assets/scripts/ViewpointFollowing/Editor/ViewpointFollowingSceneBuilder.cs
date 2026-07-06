@@ -164,7 +164,7 @@ public static class ViewpointFollowingSceneBuilder
         Selection.activeGameObject = rigGO;
         EditorUtility.DisplayDialog("視点追従実験シーンを生成しました",
             "保存先: " + ScenePath + "\n\n" +
-            "使い方（詳細は Assets/docs/07 参照）:\n" +
+            "使い方（詳細は docs/viewpoint-following/07 参照）:\n" +
             "1. Record モードで O キー → 歩行 → O → S で軌跡を収録\n" +
             "2. M キーで Follow モードへ切替\n" +
             "3. O キー → 歩行 → 自動停止 → S で追従データを保存\n\n" +
