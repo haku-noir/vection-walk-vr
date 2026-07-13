@@ -33,6 +33,13 @@ public class FollowingExperimentManager : MonoBehaviour
     [Tooltip("現在のモード（停止中に Mキー/Aボタン でも切替可能）")]
     public Mode mode = Mode.Record;
 
+    /// <summary>
+    /// Follow 開始時に，今立っている位置と向き（ヨー）を収録開始時点に自動で一致させるか．
+    /// OVRCameraRig を回転・平行移動して合わせるため，被験者の立ち位置合わせが不要になる．
+    /// </summary>
+    [Tooltip("Follow開始時に、現在の立ち位置と向きを収録開始時点に自動で合わせる")]
+    public bool alignToRecordingOnStart = true;
+
     [Header("参照（シーンビルダーが自動設定）")]
     /// <summary>軌跡の収録クラス</summary>
     [Tooltip("軌跡の収録クラス")]
@@ -152,6 +159,11 @@ public class FollowingExperimentManager : MonoBehaviour
                 Debug.LogWarning("[FollowingExperiment] 軌跡ファイルがないため開始できません．先に Record モードで収録してください．");
                 return;
             }
+            // 今立っている位置・向きを収録開始時点に合わせる（開始誤差をゼロに揃える）
+            if (alignToRecordingOnStart)
+            {
+                AlignToRecordingStart();
+            }
             player.StartPlayback();
             switcher.mode = ViewSwitcher.SourceMode.Alternate;
             switcher.ResetPhase(); // 必ずライブ映像から提示を始める
@@ -220,6 +232,46 @@ public class FollowingExperimentManager : MonoBehaviour
         {
             postprocess.SetActive(!running);
         }
+    }
+
+    /// <summary>
+    /// 今立っている位置と向き（ヨー）を，収録軌跡の開始時点に一致させる．
+    /// HMD 自体は動かせないため，親である OVRCameraRig を「現在の頭部位置を中心に」
+    /// 回転させてから平行移動することで，仮想世界側を合わせる．
+    /// </summary>
+    /// <remarks>
+    /// - 合わせるのは水平位置（XZ）とヨーのみ．高さ（Y）は被験者自身の目の高さを維持する
+    ///   （収録者と身長が違っても床の高さが変わらないようにするため）．
+    /// - これにより「収録時と同じ場所で視点リセットする」手順が不要になる．
+    ///   現在向いている実方向が，仮想空間での収録開始方向（コース進行方向）になる．
+    /// </remarks>
+    private void AlignToRecordingStart()
+    {
+        Transform head = recorder != null ? recorder.headAnchor : null;
+        if (head == null)
+        {
+            Debug.LogWarning("[FollowingExperiment] headAnchor が未設定のため開始地点合わせをスキップします");
+            return;
+        }
+        OVRCameraRig rig = head.GetComponentInParent<OVRCameraRig>();
+        if (rig == null)
+        {
+            Debug.LogWarning("[FollowingExperiment] OVRCameraRig が見つからないため開始地点合わせをスキップします");
+            return;
+        }
+        Transform root = rig.transform;
+
+        // 1) ヨーを合わせる: 現在の頭部位置を軸に rig ごと回転（頭部位置は変わらない）
+        float deltaYaw = Mathf.DeltaAngle(head.eulerAngles.y, player.StartRotation.eulerAngles.y);
+        root.RotateAround(head.position, Vector3.up, deltaYaw);
+
+        // 2) 水平位置を合わせる: 頭部が収録開始位置（XZ）に来るよう rig を平行移動
+        Vector3 delta = player.StartPosition - head.position;
+        delta.y = 0f; // 高さは合わせない（被験者自身の目の高さを維持）
+        root.position += delta;
+
+        Debug.Log("[FollowingExperiment] 開始地点合わせ: Δyaw=" + deltaYaw.ToString("F1")
+            + "° 移動=" + new Vector2(delta.x, delta.z).magnitude.ToString("F2") + "m");
     }
 
     /// <summary>

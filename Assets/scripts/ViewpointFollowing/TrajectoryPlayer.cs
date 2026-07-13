@@ -44,6 +44,10 @@ public class TrajectoryPlayer : MonoBehaviour
     public Vector3 CurrentPosition { get; private set; }
     /// <summary>現在の収録回転</summary>
     public Quaternion CurrentRotation { get; private set; }
+    /// <summary>収録開始時点の頭部位置（開始地点合わせに使う）</summary>
+    public Vector3 StartPosition { get { return IsLoaded ? positions[0] : Vector3.zero; } }
+    /// <summary>収録開始時点の頭部回転（開始地点合わせに使う）</summary>
+    public Quaternion StartRotation { get { return IsLoaded ? rotations[0] : Quaternion.identity; } }
 
     /// <summary>
     /// 軌跡 CSV を読み込む（既に読み込み済みなら何もしない）
