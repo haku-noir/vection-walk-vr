@@ -76,8 +76,9 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 
      PositionOnly では「収録どおりの位置から今の頭の向きで見た映像」、
      RotationOnly では「今いる位置から収録どおりの向きで見た映像」が提示される。
-     いずれの条件でも CSV の recPos/recRot 列には収録軌跡の値がそのまま記録される
-     （条件はファイル名に入る。例: `following_results_1.0Hz_PositionOnly_～.csv`）
+     CSV の recPos/recRot 列には**実際に提示された映像カメラの姿勢**（条件による
+     置き換え後の値）が記録される（条件はファイル名に入る。
+     例: `following_results_1.0Hz_PositionOnly_～.csv`）
 4. `P` で開始（自動保存つき）→ ライブ映像から始まり、設定周波数で収録映像と交互に切り替わる
 5. 歩行 → 収録軌跡の再生が終わると**自動停止**し、`following_results_周波数_再生成分_日時.csv` が
    自動保存される（`O` での途中停止でも保存される。練習は `O` で開始すれば保存されない）
@@ -104,7 +105,8 @@ time, posX, posY, posZ, qX, qY, qZ, qW, eulerX, eulerY, eulerZ
 ```
 time, source, freq,
 livePosX/Y/Z, liveRotX/Y/Z,     ← ライブの頭部位置・回転
-recPosX/Y/Z,  recRotX/Y/Z,      ← その瞬間の収録軌跡上の位置・回転
+recPosX/Y/Z,  recRotX/Y/Z,      ← その瞬間に実際に提示された映像カメラの位置・回転
+                                  （再生成分の条件による置き換え後の値）
 errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
 ```
 - source: その瞬間に表示していた映像（0 = ライブ, 1 = 収録）

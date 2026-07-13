@@ -4,10 +4,14 @@ using System.IO;
 using UnityEngine;
 
 /// <summary>
-/// 実験走：ライブの頭部位置と収録軌跡上の対応位置を毎フレーム記録し，
-/// 追従誤差解析の元データとなる CSV を保存するクラス．
+/// 実験走：ライブの頭部姿勢と，実際に提示された収録映像カメラ（ゴーストカメラ）の姿勢を
+/// 毎フレーム記録し，追従誤差解析の元データとなる CSV を保存するクラス．
 /// FixedUpdate（50Hz）で記録する．
 /// </summary>
+/// <remarks>
+/// recPos / recRot 列には再生成分の条件（PositionOnly / RotationOnly）による
+/// 置き換え後の「実際に再生された姿勢」が入る．
+/// </remarks>
 public class FollowingLogger : MonoBehaviour
 {
     /// <summary>

@@ -67,9 +67,15 @@ public class TrajectoryPlayer : MonoBehaviour
     public float Duration { get { return IsLoaded ? times[times.Count - 1] : 0f; } }
     /// <summary>現在の再生時刻[s]</summary>
     public float CurrentTime { get { return playTime; } }
-    /// <summary>現在の収録位置（ロガーが追従誤差の計算に使う）</summary>
+    /// <summary>
+    /// 実際に再生（ゴーストカメラに適用）された位置．
+    /// RotationOnly のときは現在の HMD 位置が入る．ロガーはこの値を記録する．
+    /// </summary>
     public Vector3 CurrentPosition { get; private set; }
-    /// <summary>現在の収録回転</summary>
+    /// <summary>
+    /// 実際に再生（ゴーストカメラに適用）された回転．
+    /// PositionOnly のときは現在の HMD 回転が入る．ロガーはこの値を記録する．
+    /// </summary>
     public Quaternion CurrentRotation { get; private set; }
     /// <summary>収録開始時点の頭部位置（開始地点合わせに使う）</summary>
     public Vector3 StartPosition { get { return IsLoaded ? positions[0] : Vector3.zero; } }
@@ -174,9 +180,9 @@ public class TrajectoryPlayer : MonoBehaviour
     /// 現在の再生時刻に対応する位置・回転を補間してゴーストカメラに適用する
     /// </summary>
     /// <remarks>
-    /// CurrentPosition / CurrentRotation には常に「収録軌跡の値」が入る
-    /// （playbackComponents に関わらず，ロガーは収録値との比較を記録できる）．
-    /// ゴーストカメラへの適用時のみ，収録しない側の成分を現在の HMD で置き換える．
+    /// 収録しない側の成分（playbackComponents で選ばなかった方）は現在の HMD で置き換える．
+    /// CurrentPosition / CurrentRotation には置き換え後の「実際に再生された姿勢」が入り，
+    /// ロガーはその値を記録する．
     /// </remarks>
     private void ApplySample()
     {
@@ -190,32 +196,34 @@ public class TrajectoryPlayer : MonoBehaviour
         float segment = times[next] - times[index];
         float t = segment > 0f ? Mathf.Clamp01((playTime - times[index]) / segment) : 0f;
 
-        CurrentPosition = Vector3.Lerp(positions[index], positions[next], t);
-        CurrentRotation = Quaternion.Slerp(rotations[index], rotations[next], t);
+        // 収録軌跡の補間値
+        Vector3 playedPos = Vector3.Lerp(positions[index], positions[next], t);
+        Quaternion playedRot = Quaternion.Slerp(rotations[index], rotations[next], t);
+
+        // 収録しない側の成分は現在の HMD（CenterEyeAnchor）を参照する
+        if (headAnchor != null)
+        {
+            if (playbackComponents == PlaybackComponents.PositionOnly)
+            {
+                playedRot = headAnchor.rotation;   // 回転はライブ
+            }
+            else if (playbackComponents == PlaybackComponents.RotationOnly)
+            {
+                playedPos = headAnchor.position;   // 位置はライブ
+            }
+        }
+        else if (playbackComponents != PlaybackComponents.PositionAndRotation)
+        {
+            Debug.LogWarning("[TrajectoryPlayer] headAnchor が未設定のため PositionAndRotation として再生します");
+        }
+
+        // 実際に再生された姿勢として公開（ロガーが記録する値）
+        CurrentPosition = playedPos;
+        CurrentRotation = playedRot;
 
         if (ghostCamera != null)
         {
-            Vector3 ghostPos = CurrentPosition;
-            Quaternion ghostRot = CurrentRotation;
-
-            // 収録しない側の成分は現在の HMD（CenterEyeAnchor）を参照する
-            if (headAnchor != null)
-            {
-                if (playbackComponents == PlaybackComponents.PositionOnly)
-                {
-                    ghostRot = headAnchor.rotation;   // 回転はライブ
-                }
-                else if (playbackComponents == PlaybackComponents.RotationOnly)
-                {
-                    ghostPos = headAnchor.position;   // 位置はライブ
-                }
-            }
-            else if (playbackComponents != PlaybackComponents.PositionAndRotation)
-            {
-                Debug.LogWarning("[TrajectoryPlayer] headAnchor が未設定のため PositionAndRotation として再生します");
-            }
-
-            ghostCamera.SetPositionAndRotation(ghostPos, ghostRot);
+            ghostCamera.SetPositionAndRotation(playedPos, playedRot);
         }
     }
 
