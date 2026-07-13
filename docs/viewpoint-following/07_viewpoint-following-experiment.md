@@ -88,6 +88,34 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 同じ trajectory ファイルのまま、周波数・環境密度を変えて 4〜5 を繰り返す。
 **同一軌跡・別条件の比較ができるのがこの設計（軌跡収録＋再レンダリング方式）の利点**。
 
+## 再生確認シーン（ViewpointFollowingReplay.unity）
+
+実験後に「そのとき HMD に表示していた映像」を Game ビューで見直すためのシーン。**HMD 不要**。
+メニュー **Tools > 視点追従実験 > 再生確認シーンを生成** で作成する（初回のみ）。
+
+- シーンを再生すると、データフォルダ内で**最も新しい CSV**（trajectory / following_results）を
+  自動で読み込んで再生が始まる。ファイル指定は ReplayRig > ReplayPlayer > **File Name**
+- `trajectory_*.csv` → 収録走の頭部視点をそのまま再生
+- `following_results_*.csv` → **Display Mode** で表示を選択:
+
+  | モード | 表示内容 |
+  |---|---|
+  | AsExperienced | 実験時と同じ時分割切替を再現（source列に従いライブ⇔収録を切替） |
+  | LiveOnly | 被験者が実際に移動した頭部（ライブ）の視点のみ |
+  | PlayedOnly | 提示された収録映像側の視点のみ |
+
+- 画面上部のバナーで表示中の視点が分かる（**オレンジ=収録映像 / 青=ライブ**）
+
+| 操作 | 動作 |
+|---|---|
+| Space | 再生 / 一時停止 |
+| R | 最初から再生 |
+| ← / → | 5秒 巻き戻し / 早送り |
+| 1 / 2 / 3 | 環境密度切替（実験時の条件に手動で合わせる） |
+
+その他: Playback Speed（0.1〜4倍速）、Loop（繰り返し再生）を Inspector で設定できる。
+環境密度は CSV に記録されていないため、実験時の条件に合わせて手動で切り替えること。
+
 ## データ形式
 
 保存先: エディタ = `Assets/ResultData/following/`、実機 = `persistentDataPath/following/`
@@ -125,6 +153,7 @@ errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
 | `ViewSwitcher.cs` | CenterRawImage の texture を Live ⇔ Playback で交互切替（デューティ比50%の矩形波） |
 | `FollowingLogger.cs` | 実験走: ライブ頭部位置と収録位置・表示ソースを 50Hz で記録し CSV 保存 |
 | `EnvironmentSwitcher.cs` | 環境オブジェクト密度の切替（1/2/3 キー） |
+| `ReplayPlayer.cs` | 再生確認: 保存済みCSVの視点を通常カメラで再現（再生確認シーンで使用、HMD不要） |
 | `FollowingPaths.cs` | データ保存先パスの一元管理（エディタ/実機の分岐） |
 | `Editor/ViewpointFollowingSceneBuilder.cs` | 実験シーンの自動構築（メニュー: Tools > 視点追従実験） |
 

@@ -18,6 +18,7 @@ using UnityEngine.UI;
 public static class ViewpointFollowingSceneBuilder
 {
     private const string ScenePath = "Assets/Scenes/ViewpointFollowing.unity";
+    private const string ReplayScenePath = "Assets/Scenes/ViewpointFollowingReplay.unity";
     private const string LiveRTPath = "Assets/Textures/CenterEye.renderTexture";
     private const string PlaybackRTPath = "Assets/Textures/PlaybackEye.renderTexture";
     private const string PlayerPrefabPath = "Assets/Prefabs/Player.prefab";
@@ -170,6 +171,65 @@ public static class ViewpointFollowingSceneBuilder
             "2. M キーで Follow モードへ切替\n" +
             "3. O キー → 歩行 → 自動停止 → S で追従データを保存\n\n" +
             "切替周波数は ExperimentRig の ViewSwitcher，\n環境密度は 1/2/3 キーで変更できます。",
+            "OK");
+    }
+
+    /// <summary>
+    /// 再生確認シーン（ViewpointFollowingReplay.unity）を自動構築する．
+    /// 実験シーンと同じ環境の中で，保存済み CSV の視点を通常カメラで再生する（HMD不要）．
+    /// </summary>
+    [MenuItem("Tools/視点追従実験/再生確認シーンを生成")]
+    public static void BuildReplayScene()
+    {
+        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+
+        materialCache.Clear();
+
+        // --- 1. 新規シーン（Main Camera + Directional Light 付き）を作成 ---
+        var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+
+        // Main Camera を再生用カメラとして流用する
+        GameObject camGO = GameObject.Find("Main Camera");
+        if (camGO == null)
+        {
+            camGO = new GameObject("ReplayCamera");
+            camGO.AddComponent<Camera>();
+            camGO.AddComponent<AudioListener>();
+        }
+        camGO.name = "ReplayCamera";
+        Camera replayCam = camGO.GetComponent<Camera>();
+        replayCam.fieldOfView = 90f;                          // 実験時の撮影カメラに合わせる
+        replayCam.nearClipPlane = 0.1f;
+        replayCam.stereoTargetEye = StereoTargetEyeMask.None; // HMD には出力しない（Gameビュー専用）
+
+        // --- 2. 実験シーンと同じ床・環境・マーカーを構築 ---
+        BuildFloorAndMarkers();
+        GameObject envRich, envSparse;
+        BuildEnvironment(out envRich, out envSparse);
+
+        // --- 3. ReplayRig（再生管理オブジェクト）を作成し配線 ---
+        GameObject rigGO = new GameObject("ReplayRig");
+        var replay = rigGO.AddComponent<ReplayPlayer>();
+        var envSwitcher = rigGO.AddComponent<EnvironmentSwitcher>();
+
+        replay.replayCamera = replayCam;
+        envSwitcher.envRich = envRich;
+        envSwitcher.envSparse = envSparse;
+
+        // --- 4. シーンを保存 ---
+        EditorSceneManager.SaveScene(scene, ReplayScenePath);
+        AssetDatabase.SaveAssets();
+
+        Selection.activeGameObject = rigGO;
+        EditorUtility.DisplayDialog("再生確認シーンを生成しました",
+            "保存先: " + ReplayScenePath + "\n\n" +
+            "再生するだけで最新のCSV（trajectory/following_results）が自動で読み込まれます。\n" +
+            "ファイル指定は ReplayRig > ReplayPlayer > File Name。\n\n" +
+            "表示モード（following時）:\n" +
+            "- AsExperienced: 実験時と同じ時分割切替を再現\n" +
+            "- LiveOnly: 被験者が移動した頭部視点のみ\n" +
+            "- PlayedOnly: 提示された収録映像側のみ\n\n" +
+            "操作: Space=再生/停止, R=最初から, ←/→=±5秒, 1/2/3=環境密度",
             "OK");
     }
 
