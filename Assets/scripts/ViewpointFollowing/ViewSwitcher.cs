@@ -57,6 +57,16 @@ public class ViewSwitcher : MonoBehaviour
     public SourceMode mode = SourceMode.LiveOnly;
 
     /// <summary>
+    /// デバッグ用: 収録映像の表示中は視野をオレンジ色に着色して，どちらのソースが
+    /// 表示されているかを判別できるようにする．**本番実験では必ずオフにすること．**
+    /// </summary>
+    [Tooltip("デバッグ用: 収録映像の表示中は視野をオレンジ色に着色する（本番実験ではオフ）")]
+    public bool debugTint = true;
+
+    /// <summary>収録映像表示中のデバッグ着色</summary>
+    private static readonly Color PlaybackTint = new Color(1f, 0.75f, 0.45f, 1f);
+
+    /// <summary>
     /// 今表示しているソース（0 = ライブ, 1 = 収録）．ロガーが記録に使う．
     /// </summary>
     public int CurrentSource { get; private set; }
@@ -90,6 +100,12 @@ public class ViewSwitcher : MonoBehaviour
                 CurrentSource = 1 - CurrentSource; // 0⇔1 をトグル
                 ApplyTexture();
             }
+        }
+
+        // デバッグ着色は Inspector から実行中に切り替えられるよう毎フレーム反映する
+        if (rawImage != null)
+        {
+            rawImage.color = (debugTint && CurrentSource == 1) ? PlaybackTint : Color.white;
         }
     }
 

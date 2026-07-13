@@ -54,16 +54,29 @@ public class FollowingExperimentManager : MonoBehaviour
     /// <summary>実験実行中か（false = 一時停止中）</summary>
     public bool IsRunning { get; private set; }
 
+    /// <summary>Inspector からのモード変更を検知するための前回値</summary>
+    private Mode lastMode;
+
     private void Start()
     {
         // 既存実験と同様，停止状態（時間停止・視野マスク）から開始する
         SetRunning(false);
         // 収録映像用カメラはモードに応じて有効化する
+        lastMode = mode;
         UpdateGhostCameraActive();
     }
 
     private void Update()
     {
+        // Inspector から直接モードを変更された場合にも GhostCamera の有効状態を追随させる
+        // （Mキー/Aボタン以外の経路でモードが変わると GhostCamera が無効のままになるのを防ぐ）
+        if (mode != lastMode)
+        {
+            lastMode = mode;
+            UpdateGhostCameraActive();
+            Debug.Log("[FollowingExperiment] モード切替: " + mode);
+        }
+
         // --- 開始・停止のトグル（Oキー / Bボタン） ---
         if (Input.GetKeyDown(KeyCode.O) || OVRInput.GetDown(OVRInput.RawButton.B))
         {
@@ -89,8 +102,7 @@ public class FollowingExperimentManager : MonoBehaviour
             if (Input.GetKeyDown(KeyCode.M) || OVRInput.GetDown(OVRInput.RawButton.A))
             {
                 mode = (mode == Mode.Record) ? Mode.Follow : Mode.Record;
-                UpdateGhostCameraActive();
-                Debug.Log("[FollowingExperiment] モード切替: " + mode);
+                // GhostCamera の有効化とログ出力は Update 冒頭のモード変更検知に任せる
             }
         }
         else
@@ -205,6 +217,19 @@ public class FollowingExperimentManager : MonoBehaviour
             ? "読込済 " + player.Duration.ToString("F1") + "s" : "未読込";
         GUI.Label(new Rect(10, 10, 600, 20), "モード: " + mode + "  |  " + state);
         GUI.Label(new Rect(10, 30, 600, 20), "切替周波数: " + freq + "  |  軌跡: " + loaded);
+
+        // Follow 実行中は，表示ソース・再生時刻・両者の位置を表示して動作確認しやすくする
+        if (IsRunning && mode == Mode.Follow && switcher != null && player != null)
+        {
+            string src = switcher.CurrentSource == 0 ? "ライブ" : "収録（デバッグ着色時はオレンジ）";
+            GUI.Label(new Rect(10, 50, 700, 20),
+                "表示中: " + src + "  |  再生時刻: " + player.CurrentTime.ToString("F1") + " / " + player.Duration.ToString("F1") + " s");
+            if (recorder != null && recorder.headAnchor != null)
+            {
+                GUI.Label(new Rect(10, 70, 700, 20),
+                    "ライブ頭部: " + recorder.headAnchor.position.ToString("F2") + "  |  収録位置: " + player.CurrentPosition.ToString("F2"));
+            }
+        }
     }
 #endif
 }
