@@ -93,10 +93,12 @@ public class FollowingLogger : MonoBehaviour
         }
 
         var inv = CultureInfo.InvariantCulture;
-        // 切替周波数をファイル名に埋め込む（例: following_results_2.0Hz_20260706_193000.csv）
+        // 実験条件（切替周波数・再生成分）をファイル名に埋め込む
+        // 例: following_results_2.0Hz_PositionOnly_20260706_193000.csv
         string freqTag = switcher != null ? switcher.switchFrequency.ToString("F1", inv) + "Hz" : "unknown";
+        string componentsTag = player != null ? player.playbackComponents.ToString() : "unknown";
         string path = Path.Combine(FollowingPaths.DataDir,
-            "following_results_" + freqTag + "_" + FollowingPaths.Timestamp() + ".csv");
+            "following_results_" + freqTag + "_" + componentsTag + "_" + FollowingPaths.Timestamp() + ".csv");
 
         using (StreamWriter writer = new StreamWriter(path))
         {

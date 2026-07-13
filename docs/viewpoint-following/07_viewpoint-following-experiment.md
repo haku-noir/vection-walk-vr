@@ -64,9 +64,22 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
    （FollowingExperimentManager > Align To Recording On Start、初期値オン）。
    そのため厳密な立ち位置合わせは不要だが、**実空間でコース分（約10m）歩ける方向を向いて**開始すること
    （今向いている実方向が、仮想空間でのコース進行方向になる）
-3. 必要なら切替周波数（ViewSwitcher > Switch Frequency）と環境密度（`1`/`2`/`3`）を設定
+3. 必要なら実験条件を設定:
+   - **切替周波数**: ViewSwitcher > Switch Frequency
+   - **環境密度**: `1`/`2`/`3` キー
+   - **再生成分**: TrajectoryPlayer > Playback Components
+     | 値 | 収録映像の位置 | 収録映像の回転 |
+     |---|---|---|
+     | PositionAndRotation | 収録軌跡 | 収録軌跡 |
+     | PositionOnly | 収録軌跡 | **現在のHMD** |
+     | RotationOnly | **現在のHMD** | 収録軌跡 |
+
+     PositionOnly では「収録どおりの位置から今の頭の向きで見た映像」、
+     RotationOnly では「今いる位置から収録どおりの向きで見た映像」が提示される。
+     いずれの条件でも CSV の recPos/recRot 列には収録軌跡の値がそのまま記録される
+     （条件はファイル名に入る。例: `following_results_1.0Hz_PositionOnly_～.csv`）
 4. `P` で開始（自動保存つき）→ ライブ映像から始まり、設定周波数で収録映像と交互に切り替わる
-5. 歩行 → 収録軌跡の再生が終わると**自動停止**し、`following_results_周波数_日時.csv` が
+5. 歩行 → 収録軌跡の再生が終わると**自動停止**し、`following_results_周波数_再生成分_日時.csv` が
    自動保存される（`O` での途中停止でも保存される。練習は `O` で開始すれば保存されない）
 
 ### 実験条件を変えて繰り返す

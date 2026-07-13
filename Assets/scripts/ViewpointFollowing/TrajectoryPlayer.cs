@@ -11,10 +11,37 @@ using UnityEngine;
 public class TrajectoryPlayer : MonoBehaviour
 {
     /// <summary>
+    /// 収録軌跡から再生する成分の選択
+    /// </summary>
+    public enum PlaybackComponents
+    {
+        /// <summary>位置・回転とも収録軌跡を再生する（従来の動作）</summary>
+        PositionAndRotation,
+        /// <summary>位置のみ収録軌跡を再生し，回転は現在の HMD の回転を使う</summary>
+        PositionOnly,
+        /// <summary>回転のみ収録軌跡を再生し，位置は現在の HMD の位置を使う</summary>
+        RotationOnly,
+    }
+
+    /// <summary>
     /// 軌跡どおりに動かすゴーストカメラ（PlaybackEye RenderTexture に描画するカメラ）
     /// </summary>
     [Tooltip("軌跡どおりに動かすゴーストカメラ")]
     public Transform ghostCamera;
+
+    /// <summary>
+    /// 収録軌跡から再生する成分．PositionOnly では回転は現在の HMD を，
+    /// RotationOnly では位置は現在の HMD を参照する．
+    /// </summary>
+    [Tooltip("収録軌跡から再生する成分（残りの成分は現在のHMDを参照する）")]
+    public PlaybackComponents playbackComponents = PlaybackComponents.PositionAndRotation;
+
+    /// <summary>
+    /// 現在の HMD の頭部（CenterEyeAnchor）．PositionOnly / RotationOnly のときに
+    /// 収録しない側の成分の参照元になる．未設定なら FollowingExperimentManager が自動設定する．
+    /// </summary>
+    [Tooltip("現在のHMDの頭部（PositionOnly/RotationOnly時の参照元）")]
+    public Transform headAnchor;
 
     /// <summary>
     /// 読み込む軌跡ファイル名（空欄なら保存先フォルダ内の最新の trajectory_*.csv を自動選択）
@@ -146,6 +173,11 @@ public class TrajectoryPlayer : MonoBehaviour
     /// <summary>
     /// 現在の再生時刻に対応する位置・回転を補間してゴーストカメラに適用する
     /// </summary>
+    /// <remarks>
+    /// CurrentPosition / CurrentRotation には常に「収録軌跡の値」が入る
+    /// （playbackComponents に関わらず，ロガーは収録値との比較を記録できる）．
+    /// ゴーストカメラへの適用時のみ，収録しない側の成分を現在の HMD で置き換える．
+    /// </remarks>
     private void ApplySample()
     {
         // 再生位置のインデックスを進める
@@ -163,7 +195,27 @@ public class TrajectoryPlayer : MonoBehaviour
 
         if (ghostCamera != null)
         {
-            ghostCamera.SetPositionAndRotation(CurrentPosition, CurrentRotation);
+            Vector3 ghostPos = CurrentPosition;
+            Quaternion ghostRot = CurrentRotation;
+
+            // 収録しない側の成分は現在の HMD（CenterEyeAnchor）を参照する
+            if (headAnchor != null)
+            {
+                if (playbackComponents == PlaybackComponents.PositionOnly)
+                {
+                    ghostRot = headAnchor.rotation;   // 回転はライブ
+                }
+                else if (playbackComponents == PlaybackComponents.RotationOnly)
+                {
+                    ghostPos = headAnchor.position;   // 位置はライブ
+                }
+            }
+            else if (playbackComponents != PlaybackComponents.PositionAndRotation)
+            {
+                Debug.LogWarning("[TrajectoryPlayer] headAnchor が未設定のため PositionAndRotation として再生します");
+            }
+
+            ghostCamera.SetPositionAndRotation(ghostPos, ghostRot);
         }
     }
 

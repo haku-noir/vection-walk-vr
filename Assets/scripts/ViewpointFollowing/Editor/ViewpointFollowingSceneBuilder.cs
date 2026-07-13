@@ -136,6 +136,7 @@ public static class ViewpointFollowingSceneBuilder
         recorder.headAnchor = centerEyeAnchor;
 
         trajPlayer.ghostCamera = ghost.transform;
+        trajPlayer.headAnchor = centerEyeAnchor; // PositionOnly/RotationOnly 時のライブ参照元
 
         switcher.rawImage = centerRawImage;
         // ライブ映像テクスチャ: RawImage に設定済みのもの（= CenterEye）を優先し，無ければアセットから取得

@@ -79,6 +79,13 @@ public class FollowingExperimentManager : MonoBehaviour
         // 収録映像用カメラはモードに応じて有効化する
         lastMode = mode;
         UpdateGhostCameraActive();
+
+        // TrajectoryPlayer の headAnchor が未配線ならレコーダーと同じものを流用する
+        // （シーンを作り直さなくても PositionOnly / RotationOnly を使えるようにするため）
+        if (player != null && player.headAnchor == null && recorder != null)
+        {
+            player.headAnchor = recorder.headAnchor;
+        }
     }
 
     private void Update()
@@ -297,8 +304,10 @@ public class FollowingExperimentManager : MonoBehaviour
         string freq = switcher != null ? switcher.switchFrequency.ToString("F1") + " Hz" : "-";
         string loaded = (player != null && player.IsLoaded)
             ? "読込済 " + player.Duration.ToString("F1") + "s" : "未読込";
+        string components = player != null ? player.playbackComponents.ToString() : "-";
         GUI.Label(new Rect(10, 10, 600, 20), "モード: " + mode + "  |  " + state);
-        GUI.Label(new Rect(10, 30, 600, 20), "切替周波数: " + freq + "  |  軌跡: " + loaded);
+        GUI.Label(new Rect(10, 30, 700, 20),
+            "切替周波数: " + freq + "  |  軌跡: " + loaded + "  |  再生成分: " + components);
 
         // Follow 実行中は，表示ソース・再生時刻・両者の位置を表示して動作確認しやすくする
         if (IsRunning && mode == Mode.Follow && switcher != null && player != null)
