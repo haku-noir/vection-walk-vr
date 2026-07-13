@@ -9,8 +9,9 @@
 /// 　交互に HMD へ提示しながら歩行させ，追従データを記録する
 ///
 /// 操作方法（既存実験の操作体系を踏襲）:
-/// - Oキー / Bボタン        : 実験の開始・停止（停止中は視野に色が付く）
-/// - 停止中に Sキー / 右中指トリガー : CSV 保存
+/// - Oキー / Bボタン        : 実験の開始・停止（保存なし。練習・動作確認用）
+/// - Pキー / Yボタン        : 自動保存つき開始（本番用。停止時にCSVを自動保存）
+/// - 停止中に Sキー / 右中指トリガー : CSV 手動保存
 /// - 停止中に Mキー / Aボタン       : モード切替（Record ⇔ Follow）
 /// </summary>
 public class FollowingExperimentManager : MonoBehaviour
@@ -57,6 +58,13 @@ public class FollowingExperimentManager : MonoBehaviour
     /// <summary>Inspector からのモード変更を検知するための前回値</summary>
     private Mode lastMode;
 
+    /// <summary>
+    /// この試行の終了時に CSV を自動保存するか
+    /// （Pキー / Yボタンで開始した場合に true．毎回ファイルが増えるのを避けるため，
+    /// 通常の Oキー / Bボタン開始では自動保存しない）
+    /// </summary>
+    private bool autoSaveOnStop;
+
     private void Start()
     {
         // 既存実験と同様，停止状態（時間停止・視野マスク）から開始する
@@ -77,7 +85,7 @@ public class FollowingExperimentManager : MonoBehaviour
             Debug.Log("[FollowingExperiment] モード切替: " + mode);
         }
 
-        // --- 開始・停止のトグル（Oキー / Bボタン） ---
+        // --- 開始・停止のトグル（Oキー / Bボタン: 保存なしの開始） ---
         if (Input.GetKeyDown(KeyCode.O) || OVRInput.GetDown(OVRInput.RawButton.B))
         {
             if (IsRunning)
@@ -86,8 +94,15 @@ public class FollowingExperimentManager : MonoBehaviour
             }
             else
             {
-                StartTrial();
+                StartTrial(false);
             }
+        }
+
+        // --- 自動保存つき開始（Pキー / Yボタン: 本番試行用） ---
+        // 停止時（再生終了による自動停止を含む）に CSV を自動保存する
+        if (!IsRunning && (Input.GetKeyDown(KeyCode.P) || OVRInput.GetDown(OVRInput.RawButton.Y)))
+        {
+            StartTrial(true);
         }
 
         if (!IsRunning)
@@ -119,7 +134,8 @@ public class FollowingExperimentManager : MonoBehaviour
     /// <summary>
     /// 試行を開始する（時間を動かし，視野マスクを外す）
     /// </summary>
-    private void StartTrial()
+    /// <param name="autoSave"> true なら試行の終了時に CSV を自動保存する </param>
+    private void StartTrial(bool autoSave)
     {
         if (mode == Mode.Record)
         {
@@ -142,8 +158,9 @@ public class FollowingExperimentManager : MonoBehaviour
             followingLogger.StartLogging();
         }
 
+        autoSaveOnStop = autoSave;
         SetRunning(true);
-        Debug.Log("[FollowingExperiment] 開始 (" + mode + ")");
+        Debug.Log("[FollowingExperiment] 開始 (" + mode + (autoSave ? ", 自動保存あり" : ", 保存なし") + ")");
     }
 
     /// <summary>
@@ -162,7 +179,18 @@ public class FollowingExperimentManager : MonoBehaviour
         }
 
         SetRunning(false);
-        Debug.Log("[FollowingExperiment] 停止（Sキー/右中指トリガーで保存できます）");
+
+        // 自動保存つき開始（Pキー / Yボタン）だった場合はここで CSV を保存する
+        if (autoSaveOnStop)
+        {
+            autoSaveOnStop = false;
+            SaveCurrentData();
+            Debug.Log("[FollowingExperiment] 停止・自動保存しました");
+        }
+        else
+        {
+            Debug.Log("[FollowingExperiment] 停止（Sキー/右中指トリガーで保存できます）");
+        }
     }
 
     /// <summary>
@@ -211,7 +239,9 @@ public class FollowingExperimentManager : MonoBehaviour
     /// </summary>
     private void OnGUI()
     {
-        string state = IsRunning ? "実行中" : "停止中（O:開始 / S:保存 / M:モード切替）";
+        string state = IsRunning
+            ? "実行中" + (autoSaveOnStop ? "（自動保存あり）" : "（保存なし）")
+            : "停止中（O:開始 / P:自動保存つき開始 / S:保存 / M:モード切替）";
         string freq = switcher != null ? switcher.switchFrequency.ToString("F1") + " Hz" : "-";
         string loaded = (player != null && player.IsLoaded)
             ? "読込済 " + player.Duration.ToString("F1") + "s" : "未読込";
