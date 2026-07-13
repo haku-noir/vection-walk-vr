@@ -75,6 +75,8 @@ crashlytics-build.properties
 # Claude Code local settings (machine-specific, not shared)
 /.claude/settings.local.json
 
-# 視点追従実験の計測データ（CSV）はgit管理しない
+# 視点追従実験の計測データ（CSV）と解析出力（PNG）はgit管理しない
 /[Aa]ssets/ResultData/following/*.csv
 /[Aa]ssets/ResultData/following/*.csv.meta
+/[Aa]ssets/ResultData/following/*.png
+/[Aa]ssets/ResultData/following/*.png.meta
