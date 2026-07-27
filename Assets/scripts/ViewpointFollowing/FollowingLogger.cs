@@ -97,12 +97,16 @@ public class FollowingLogger : MonoBehaviour
         }
 
         var inv = CultureInfo.InvariantCulture;
-        // 実験条件（切替周波数・再生成分）をファイル名に埋め込む
+        // 実験条件（切替周波数・再生成分・4ストローク）をファイル名に埋め込む
         // 例: following_results_2.0Hz_PositionOnly_20260706_193000.csv
+        //     following_results_3.0Hz_PositionAndRotation_4stEnhance_20260706_193000.csv
         string freqTag = switcher != null ? switcher.switchFrequency.ToString("F1", inv) + "Hz" : "unknown";
         string componentsTag = player != null ? player.playbackComponents.ToString() : "unknown";
+        // 4ストローク提示だった場合のみ極性つきタグを足す（無効時は従来のファイル名と互換）
+        string fourStrokeTag = (switcher != null && switcher.fourStrokeEnabled && switcher.fourStroke != null)
+            ? "_4st" + switcher.fourStroke.polarity : "";
         string path = Path.Combine(FollowingPaths.DataDir,
-            "following_results_" + freqTag + "_" + componentsTag + "_" + FollowingPaths.Timestamp() + ".csv");
+            "following_results_" + freqTag + "_" + componentsTag + fourStrokeTag + "_" + FollowingPaths.Timestamp() + ".csv");
 
         using (StreamWriter writer = new StreamWriter(path))
         {

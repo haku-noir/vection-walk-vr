@@ -86,6 +86,17 @@ public class FollowingExperimentManager : MonoBehaviour
         {
             player.headAnchor = recorder.headAnchor;
         }
+
+        // 4ストローク合成器が未配線なら自動で追加する
+        // （シーンを作り直さなくても 4 キーで 4ストローク提示を使えるようにするため）
+        if (switcher != null && switcher.fourStroke == null)
+        {
+            switcher.fourStroke = switcher.GetComponent<FourStrokeCompositor>();
+            if (switcher.fourStroke == null)
+            {
+                switcher.fourStroke = switcher.gameObject.AddComponent<FourStrokeCompositor>();
+            }
+        }
     }
 
     private void Update()
@@ -132,6 +143,26 @@ public class FollowingExperimentManager : MonoBehaviour
             {
                 mode = (mode == Mode.Record) ? Mode.Follow : Mode.Record;
                 // GhostCamera の有効化とログ出力は Update 冒頭のモード変更検知に任せる
+            }
+
+            // --- 4ストローク提示の ON/OFF（停止中に 4キー。試行中の条件変更を防ぐ） ---
+            if (switcher != null
+                && (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4)))
+            {
+                switcher.fourStrokeEnabled = !switcher.fourStrokeEnabled;
+                Debug.Log("[FollowingExperiment] 4ストローク提示: "
+                    + (switcher.fourStrokeEnabled ? "ON" : "OFF"));
+            }
+
+            // --- 4ストロークの極性巡回（停止中に Vキー: Enhance → Reversal → Zero） ---
+            if (switcher != null && switcher.fourStroke != null && Input.GetKeyDown(KeyCode.V))
+            {
+                var p = switcher.fourStroke.polarity;
+                switcher.fourStroke.polarity =
+                    p == FourStrokeCompositor.Polarity.Enhance ? FourStrokeCompositor.Polarity.Reversal
+                    : p == FourStrokeCompositor.Polarity.Reversal ? FourStrokeCompositor.Polarity.Zero
+                    : FourStrokeCompositor.Polarity.Enhance;
+                Debug.Log("[FollowingExperiment] 4ストローク極性: " + switcher.fourStroke.polarity);
             }
         }
         else
@@ -300,14 +331,18 @@ public class FollowingExperimentManager : MonoBehaviour
     {
         string state = IsRunning
             ? "実行中" + (autoSaveOnStop ? "（自動保存あり）" : "（保存なし）")
-            : "停止中（O:開始 / P:自動保存つき開始 / S:保存 / M:モード切替）";
+            : "停止中（O:開始 / P:自動保存つき開始 / S:保存 / M:モード切替 / 4:4ストローク / V:極性）";
         string freq = switcher != null ? switcher.switchFrequency.ToString("F1") + " Hz" : "-";
         string loaded = (player != null && player.IsLoaded)
             ? "読込済 " + player.Duration.ToString("F1") + "s" : "未読込";
         string components = player != null ? player.playbackComponents.ToString() : "-";
-        GUI.Label(new Rect(10, 10, 600, 20), "モード: " + mode + "  |  " + state);
+        string fourStroke = (switcher != null && switcher.fourStrokeEnabled)
+            ? "ON (" + (switcher.fourStroke != null ? switcher.fourStroke.polarity.ToString() : "?") + ")"
+            : "OFF";
+        GUI.Label(new Rect(10, 10, 700, 20), "モード: " + mode + "  |  " + state);
         GUI.Label(new Rect(10, 30, 700, 20),
-            "切替周波数: " + freq + "  |  軌跡: " + loaded + "  |  再生成分: " + components);
+            "切替周波数: " + freq + "  |  軌跡: " + loaded + "  |  再生成分: " + components
+            + "  |  4ストローク: " + fourStroke);
 
         // Follow 実行中は，表示ソース・再生時刻・両者の位置を表示して動作確認しやすくする
         if (IsRunning && mode == Mode.Follow && switcher != null && player != null)

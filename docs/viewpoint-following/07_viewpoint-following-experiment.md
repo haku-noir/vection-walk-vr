@@ -39,6 +39,8 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 | P | Y ボタン | **自動保存つき開始**（本番用。試行の停止時＝再生終了の自動停止時を含む＝に CSV を自動保存） |
 | S（停止中） | 右中指トリガー | CSV 手動保存（O で開始した試行のデータを残したくなったとき用） |
 | M（停止中） | A ボタン | モード切替（Record ⇔ Follow） |
+| 4（停止中） | — | **4ストローク提示の ON/OFF**（詳細は [08_fourstroke.md](08_fourstroke.md)） |
+| V（停止中） | — | 4ストロークの極性切替（Enhance → Reversal → Zero） |
 | 1 / 2 / 3 | — | 環境密度切替（高密度 / 低密度 / なし） |
 
 停止は常に `O` / B ボタン。`P` で開始した試行は停止と同時に CSV が保存されるので、
@@ -67,6 +69,10 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 3. 必要なら実験条件を設定:
    - **切替周波数**: ViewSwitcher > Switch Frequency
    - **環境密度**: `1`/`2`/`3` キー
+   - **4ストローク提示**: 停止中に `4` キー（矩形波切替の代わりに、ライブと収録映像を
+     グレースケール化＋輝度反転＋クロスフェードの4ストローク合成で提示する。
+     周波数は Switch Frequency を共用。極性は `V` キー。詳細は [08_fourstroke.md](08_fourstroke.md)。
+     有効だった試行はファイル名に `_4stEnhance` などのタグが付く）
    - **再生成分**: TrajectoryPlayer > Playback Components
      | 値 | 収録映像の位置 | 収録映像の回転 |
      |---|---|---|
@@ -155,6 +161,9 @@ errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
 | `EnvironmentSwitcher.cs` | 環境オブジェクト密度の切替（1/2/3 キー） |
 | `ReplayPlayer.cs` | 再生確認: 保存済みCSVの視点を通常カメラで再現（再生確認シーンで使用、HMD不要） |
 | `FollowingPaths.cs` | データ保存先パスの一元管理（エディタ/実機の分岐） |
+| `FourStroke/FourStrokeCompositor.cs` | 4ストローク合成の共有コア（詳細は [08_fourstroke.md](08_fourstroke.md)） |
+| `FourStroke/DelayedFrameBuffer.cs` | ライブ映像のリングバッファ（4ストローク歩行シーン用の過去映像） |
+| `FourStroke/FourStrokeSelfManager.cs` | 4ストローク歩行シーンの進行管理 |
 | `Editor/ViewpointFollowingSceneBuilder.cs` | 実験シーンの自動構築（メニュー: Tools > 視点追従実験） |
 
 ### 映像パイプライン（02 の構成に GhostCamera 系統を追加）

@@ -80,3 +80,6 @@ crashlytics-build.properties
 /[Aa]ssets/ResultData/following/*.csv.meta
 /[Aa]ssets/ResultData/following/*.png
 /[Aa]ssets/ResultData/following/*.png.meta
+
+# 4ストロークの参考資料（外部プログラム一式）はgit管理しない
+/docs/fourstroke/

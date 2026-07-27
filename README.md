@@ -46,6 +46,7 @@ Unity Hub で 2021.3.45f2 を入れてプロジェクトを開く。
 
 | ドキュメント | 内容 |
 |---|---|
+| [00 実験の総覧](docs/00_experiments-overview.md) | **どんな実験で何を測るプロジェクトか**（研究内容の説明） |
 | [01 概要](docs/reversed-vision/01_project-overview.md) | 開発環境・フォルダ構成・既知の問題 |
 | [02 アーキテクチャ](docs/reversed-vision/02_architecture.md) | VR映像パイプラインと Player プレハブの構造 |
 | [03 スクリプト](docs/reversed-vision/03_scripts-reference.md) | 全スクリプトのリファレンス |
@@ -53,6 +54,7 @@ Unity Hub で 2021.3.45f2 を入れてプロジェクトを開く。
 | [05 データと解析](docs/reversed-vision/05_data-and-analysis.md) | CSV形式・保存先・解析スクリプト |
 | [06 ロードマップ](docs/viewpoint-following/06_roadmap-viewpoint-following.md) | 視点追従実験の設計方針 |
 | [07 視点追従実験](docs/viewpoint-following/07_viewpoint-following-experiment.md) | **視点追従実験の使い方・構成（本体）** |
+| [08 4ストローク](docs/viewpoint-following/08_fourstroke.md) | 4ストローク運動錯視の提示（Followモード組込み + 4ストローク歩行シーン） |
 
 ## リポジトリ運用
 

@@ -19,10 +19,12 @@ public static class ViewpointFollowingSceneBuilder
 {
     private const string ScenePath = "Assets/Scenes/ViewpointFollowing.unity";
     private const string ReplayScenePath = "Assets/Scenes/ViewpointFollowingReplay.unity";
+    private const string FourStrokeScenePath = "Assets/Scenes/ViewpointFourStroke.unity";
     private const string LiveRTPath = "Assets/Textures/CenterEye.renderTexture";
     private const string PlaybackRTPath = "Assets/Textures/PlaybackEye.renderTexture";
     private const string PlayerPrefabPath = "Assets/Prefabs/Player.prefab";
     private const string PostProcessPrefabPath = "Assets/Prefabs/PostProcessVolume.prefab";
+    private const string FourStrokeShaderPath = "Assets/scripts/ViewpointFollowing/FourStroke/FourStroke.shader";
 
     // 環境オブジェクト用のカラーパレット（乱数を使わず決定論的に配色する）
     private static readonly Color[] Palette =
@@ -69,44 +71,11 @@ public static class ViewpointFollowingSceneBuilder
         }
 
         // --- 4. Player プレハブを配置し，不要な機能を無効化 ---
-        GameObject playerPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
-        if (playerPrefab == null)
-        {
-            EditorUtility.DisplayDialog("エラー", "Player プレハブが見つかりません:\n" + PlayerPrefabPath, "OK");
-            return;
-        }
-        GameObject player = (GameObject)PrefabUtility.InstantiatePrefab(playerPrefab);
-        player.transform.position = Vector3.zero; // 開始地点 = 原点，+z 方向へ歩行する
-
-        // 視野反転（SetReversion）とコントローラ移動（PlayerInput）はこの実験では使わない
-        foreach (var reversion in player.GetComponentsInChildren<SetReversion>(true)) reversion.enabled = false;
-        foreach (var playerInput in player.GetComponentsInChildren<PlayerInput>(true)) playerInput.enabled = false;
-        // OVRPlayerController / CharacterController も余計な動作の元なので無効化（引継ぎ資料の方針どおり）
-        foreach (var b in player.GetComponentsInChildren<Behaviour>(true))
-        {
-            if (b != null && b.GetType().Name == "OVRPlayerController") b.enabled = false;
-        }
-        foreach (var charCtrl in player.GetComponentsInChildren<CharacterController>(true)) charCtrl.enabled = false;
-
-        // 両眼視差は既存実験と同様に非対応（中央系のみ使用）
-        var rig = player.GetComponentInChildren<OVRCameraRig>(true);
-        if (rig != null) rig.usePerEyeCameras = false;
-        // 左右眼用の Canvas は SetReversion を無効化した代わりに明示的に消しておく
-        SetActiveIfFound(player.transform, "LeftCanvas", false);
-        SetActiveIfFound(player.transform, "RightCanvas", false);
-
-        // 映像パイプラインの構成要素を取得
-        Transform centerEyeAnchor = FindDeep(player.transform, "CenterEyeAnchor");
-        Transform centerEyeCapture = FindDeep(player.transform, "CenterEyeCapture");
-        Transform centerRawImageTr = FindDeep(player.transform, "CenterRawImage");
-        if (centerEyeAnchor == null || centerEyeCapture == null || centerRawImageTr == null)
-        {
-            EditorUtility.DisplayDialog("エラー",
-                "Player プレハブ内に CenterEyeAnchor / CenterEyeCapture / CenterRawImage が見つかりません．", "OK");
-            return;
-        }
-        Camera captureCam = centerEyeCapture.GetComponent<Camera>();
-        RawImage centerRawImage = centerRawImageTr.GetComponent<RawImage>();
+        Transform centerEyeAnchor;
+        Camera captureCam;
+        RawImage centerRawImage;
+        GameObject player = SetupPlayerPipeline(out centerEyeAnchor, out captureCam, out centerRawImage);
+        if (player == null) return;
 
         // --- 5. GhostCamera（収録映像の再レンダリング用カメラ）を作成 ---
         GameObject ghost = new GameObject("GhostCamera");
@@ -130,6 +99,7 @@ public static class ViewpointFollowingSceneBuilder
         var recorder = rigGO.AddComponent<TrajectoryRecorder>();
         var trajPlayer = rigGO.AddComponent<TrajectoryPlayer>();
         var switcher = rigGO.AddComponent<ViewSwitcher>();
+        var fourStroke = rigGO.AddComponent<FourStrokeCompositor>();
         var logger = rigGO.AddComponent<FollowingLogger>();
         var manager = rigGO.AddComponent<FollowingExperimentManager>();
         var envSwitcher = rigGO.AddComponent<EnvironmentSwitcher>();
@@ -145,6 +115,10 @@ public static class ViewpointFollowingSceneBuilder
             ? centerRawImage.texture
             : AssetDatabase.LoadAssetAtPath<RenderTexture>(LiveRTPath);
         switcher.playbackTexture = playbackRT;
+        switcher.fourStroke = fourStroke;
+
+        // 4ストローク合成器（既定はOFF。停止中に 4 キーでON/OFF）
+        fourStroke.shader = AssetDatabase.LoadAssetAtPath<Shader>(FourStrokeShaderPath);
 
         logger.headAnchor = centerEyeAnchor;
         logger.player = trajPlayer;
@@ -231,6 +205,145 @@ public static class ViewpointFollowingSceneBuilder
             "- PlayedOnly: 提示された収録映像側のみ\n\n" +
             "操作: Space=再生/停止, R=最初から, ←/→=±5秒, 1/2/3=環境密度",
             "OK");
+    }
+
+    /// <summary>
+    /// 4ストローク歩行シーン（ViewpointFourStroke.unity）を自動構築する．
+    /// 歩行中のライブ映像と，その数百ms前の「過去の自分の映像」を
+    /// 4ストローク合成（FourStrokeCompositor）して HMD に提示する．
+    /// </summary>
+    [MenuItem("Tools/視点追従実験/4ストローク歩行シーンを生成")]
+    public static void BuildFourStrokeScene()
+    {
+        if (!EditorSceneManager.SaveCurrentModifiedScenesIfUserWantsTo()) return;
+
+        materialCache.Clear();
+
+        // --- 1. 新規シーン（Directional Light 付き）を作成 ---
+        var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+
+        // Main Camera は Player プレハブ内のカメラと競合するため削除する
+        GameObject mainCam = GameObject.Find("Main Camera");
+        if (mainCam != null) Object.DestroyImmediate(mainCam);
+
+        // --- 2. 実験シーンと同じ床・環境・マーカーを構築 ---
+        BuildFloorAndMarkers();
+        GameObject envRich, envSparse;
+        BuildEnvironment(out envRich, out envSparse);
+
+        // --- 3. Player プレハブを配置（収録映像用の GhostCamera/PlaybackEye は不要） ---
+        Transform centerEyeAnchor;
+        Camera captureCam;
+        RawImage centerRawImage;
+        GameObject player = SetupPlayerPipeline(out centerEyeAnchor, out captureCam, out centerRawImage);
+        if (player == null) return;
+
+        // --- 4. PostProcessVolume（停止中の視野マスク）を配置 ---
+        GameObject postprocess = null;
+        GameObject ppPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PostProcessPrefabPath);
+        if (ppPrefab != null)
+        {
+            postprocess = (GameObject)PrefabUtility.InstantiatePrefab(ppPrefab);
+            postprocess.name = "PostProcessVolume";
+        }
+
+        // ライブ映像テクスチャ（CenterEye）: RawImage に設定済みのものを優先
+        Texture liveTexture = centerRawImage.texture != null
+            ? centerRawImage.texture
+            : AssetDatabase.LoadAssetAtPath<RenderTexture>(LiveRTPath);
+
+        // --- 5. FourStrokeRig（4ストローク管理オブジェクト）を作成し配線 ---
+        GameObject rigGO = new GameObject("FourStrokeRig");
+        var delayBuffer = rigGO.AddComponent<DelayedFrameBuffer>();
+        var fourStroke = rigGO.AddComponent<FourStrokeCompositor>();
+        var recorder = rigGO.AddComponent<TrajectoryRecorder>();
+        var manager = rigGO.AddComponent<FourStrokeSelfManager>();
+        var envSwitcher = rigGO.AddComponent<EnvironmentSwitcher>();
+
+        delayBuffer.sourceTexture = liveTexture as RenderTexture;
+
+        fourStroke.shader = AssetDatabase.LoadAssetAtPath<Shader>(FourStrokeShaderPath);
+        fourStroke.currentTexture = liveTexture;
+
+        recorder.headAnchor = centerEyeAnchor;
+
+        manager.compositor = fourStroke;
+        manager.delayBuffer = delayBuffer;
+        manager.rawImage = centerRawImage;
+        manager.liveTexture = liveTexture;
+        manager.recorder = recorder;
+        manager.postprocess = postprocess;
+
+        envSwitcher.envRich = envRich;
+        envSwitcher.envSparse = envSparse;
+
+        // --- 6. シーンを保存 ---
+        EditorSceneManager.SaveScene(scene, FourStrokeScenePath);
+        AssetDatabase.SaveAssets();
+
+        Selection.activeGameObject = rigGO;
+        EditorUtility.DisplayDialog("4ストローク歩行シーンを生成しました",
+            "保存先: " + FourStrokeScenePath + "\n\n" +
+            "歩行中のライブ映像と数百ms前の過去映像を4ストローク合成してHMDに提示します。\n\n" +
+            "操作:\n" +
+            "- O: 開始/停止（保存なし） / P: 自動保存つき開始 / S: 軌跡CSV保存\n" +
+            "- 4: 4ストローク ON/OFF   / V: 極性（Enhance→Reversal→Zero）\n" +
+            "- ↑↓: 周波数±0.1Hz / ←→: 遅延±1フレーム / 1/2/3: 環境密度",
+            "OK");
+    }
+
+    /// <summary>
+    /// Player プレハブを配置し，この実験で不要な機能を無効化して
+    /// 映像パイプラインの構成要素（頭部アンカー・撮影カメラ・視野RawImage）を取り出す．
+    /// 実験シーンと4ストローク歩行シーンで共用する．
+    /// </summary>
+    /// <returns>配置した Player（失敗時はダイアログを表示して null）</returns>
+    private static GameObject SetupPlayerPipeline(
+        out Transform centerEyeAnchor, out Camera captureCam, out RawImage centerRawImage)
+    {
+        centerEyeAnchor = null;
+        captureCam = null;
+        centerRawImage = null;
+
+        GameObject playerPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+        if (playerPrefab == null)
+        {
+            EditorUtility.DisplayDialog("エラー", "Player プレハブが見つかりません:\n" + PlayerPrefabPath, "OK");
+            return null;
+        }
+        GameObject player = (GameObject)PrefabUtility.InstantiatePrefab(playerPrefab);
+        player.transform.position = Vector3.zero; // 開始地点 = 原点，+z 方向へ歩行する
+
+        // 視野反転（SetReversion）とコントローラ移動（PlayerInput）はこの実験では使わない
+        foreach (var reversion in player.GetComponentsInChildren<SetReversion>(true)) reversion.enabled = false;
+        foreach (var playerInput in player.GetComponentsInChildren<PlayerInput>(true)) playerInput.enabled = false;
+        // OVRPlayerController / CharacterController も余計な動作の元なので無効化（引継ぎ資料の方針どおり）
+        foreach (var b in player.GetComponentsInChildren<Behaviour>(true))
+        {
+            if (b != null && b.GetType().Name == "OVRPlayerController") b.enabled = false;
+        }
+        foreach (var charCtrl in player.GetComponentsInChildren<CharacterController>(true)) charCtrl.enabled = false;
+
+        // 両眼視差は既存実験と同様に非対応（中央系のみ使用）
+        var rig = player.GetComponentInChildren<OVRCameraRig>(true);
+        if (rig != null) rig.usePerEyeCameras = false;
+        // 左右眼用の Canvas は SetReversion を無効化した代わりに明示的に消しておく
+        SetActiveIfFound(player.transform, "LeftCanvas", false);
+        SetActiveIfFound(player.transform, "RightCanvas", false);
+
+        // 映像パイプラインの構成要素を取得
+        centerEyeAnchor = FindDeep(player.transform, "CenterEyeAnchor");
+        Transform centerEyeCapture = FindDeep(player.transform, "CenterEyeCapture");
+        Transform centerRawImageTr = FindDeep(player.transform, "CenterRawImage");
+        if (centerEyeAnchor == null || centerEyeCapture == null || centerRawImageTr == null)
+        {
+            EditorUtility.DisplayDialog("エラー",
+                "Player プレハブ内に CenterEyeAnchor / CenterEyeCapture / CenterRawImage が見つかりません．", "OK");
+            return null;
+        }
+        captureCam = centerEyeCapture.GetComponent<Camera>();
+        centerRawImage = centerRawImageTr.GetComponent<RawImage>();
+        return player;
     }
 
     /// <summary>

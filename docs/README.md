@@ -10,6 +10,12 @@
 
 ## ドキュメント一覧
 
+### docs/ 直下（プロジェクト全体）
+
+| ファイル | 内容 |
+|---|---|
+| [00_experiments-overview.md](00_experiments-overview.md) | **実験内容と測定項目の総覧**（何を操作し何を測る実験か。操作方法ではなく研究内容） |
+
 ### reversed-vision/（前任者のプロジェクト）
 
 | ファイル | 内容 |
@@ -26,6 +32,7 @@
 |---|---|
 | [06_roadmap-viewpoint-following.md](viewpoint-following/06_roadmap-viewpoint-following.md) | 視点追従実験への改造ロードマップ（設計の背景・方針） |
 | [07_viewpoint-following-experiment.md](viewpoint-following/07_viewpoint-following-experiment.md) | **視点追従実験の使い方・データ形式・実装構成（本体）** |
+| [08_fourstroke.md](viewpoint-following/08_fourstroke.md) | 4ストローク運動錯視の提示機能（原理・Followモードでの使い方・4ストローク歩行シーン） |
 
 ## 原典資料
 
@@ -34,6 +41,7 @@
 
 ## まず読むべきもの
 
-1. 初めてこのプロジェクトを触る人 → `reversed-vision/01_project-overview.md` → `reversed-vision/02_architecture.md`
-2. 視野反転実験を再現したい人 → `reversed-vision/04_scenes-and-experiments.md` → `reversed-vision/05_data-and-analysis.md`
-3. **視点追従実験を実施・開発する人** → `viewpoint-following/07_viewpoint-following-experiment.md`（設計の背景は `06`）
+1. **実験として何をするプロジェクトか知りたい人** → `00_experiments-overview.md`
+2. 初めてこのプロジェクトを触る人 → `reversed-vision/01_project-overview.md` → `reversed-vision/02_architecture.md`
+3. 視野反転実験を再現したい人 → `reversed-vision/04_scenes-and-experiments.md` → `reversed-vision/05_data-and-analysis.md`
+4. **視点追従実験を実施・開発する人** → `viewpoint-following/07_viewpoint-following-experiment.md`（設計の背景は `06`）

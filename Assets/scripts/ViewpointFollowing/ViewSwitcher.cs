@@ -63,6 +63,22 @@ public class ViewSwitcher : MonoBehaviour
     [Tooltip("デバッグ用: 収録映像の表示中は視野をオレンジ色に着色する（本番実験ではオフ）")]
     public bool debugTint = true;
 
+    [Header("4ストローク合成（オプション）")]
+    /// <summary>
+    /// 4ストローク合成器（未設定でも矩形波切替は従来どおり動作する．
+    /// FollowingExperimentManager が起動時に自動配線する）
+    /// </summary>
+    [Tooltip("4ストローク合成器（未設定でも矩形波切替は動作する）")]
+    public FourStrokeCompositor fourStroke;
+
+    /// <summary>
+    /// Alternate 時に矩形波切替の代わりに4ストローク合成
+    /// （グレースケール化＋反転＋台形波クロスフェード）で提示するか．
+    /// 変調周波数は switchFrequency を共用する．停止中に 4 キーでも切替できる．
+    /// </summary>
+    [Tooltip("Alternate時に矩形波切替の代わりに4ストローク合成で提示する（周波数はswitchFrequencyを共用）")]
+    public bool fourStrokeEnabled = false;
+
     /// <summary>収録映像表示中のデバッグ着色</summary>
     private static readonly Color PlaybackTint = new Color(1f, 0.75f, 0.45f, 1f);
 
@@ -71,25 +87,47 @@ public class ViewSwitcher : MonoBehaviour
     /// </summary>
     public int CurrentSource { get; private set; }
 
-    private float elapsed;       // 現在のソースの表示継続時間
-    private SourceMode lastMode; // モード変更検知用
+    private float elapsed;         // 現在のソースの表示継続時間
+    private SourceMode lastMode;   // モード変更検知用
+    private bool lastFourStroke;   // 4ストローク ON/OFF の変更検知用
 
     private void Start()
     {
         ResetPhase();
         lastMode = mode;
+        lastFourStroke = fourStrokeEnabled;
     }
 
     private void Update()
     {
-        // Inspector からモードが変えられた場合にも即座に反映する
-        if (mode != lastMode)
+        // Inspector からモードや 4ストローク ON/OFF が変えられた場合にも即座に反映する
+        if (mode != lastMode || fourStrokeEnabled != lastFourStroke)
         {
             ResetPhase();
             lastMode = mode;
+            lastFourStroke = fourStrokeEnabled;
         }
 
-        if (mode == SourceMode.Alternate)
+        bool useFourStroke = mode == SourceMode.Alternate && fourStrokeEnabled && fourStroke != null;
+        if (fourStroke != null)
+        {
+            fourStroke.enabled = useFourStroke; // 使わないときは無駄な合成（Blit）を止める
+        }
+
+        if (useFourStroke)
+        {
+            // 4ストローク合成: 矩形波切替の代わりに，ライブ(C)と収録(D)を
+            // 反転＋台形波クロスフェードで合成した映像を提示する
+            fourStroke.currentTexture = liveTexture;
+            fourStroke.delayedTexture = playbackTexture;
+            fourStroke.frequency = switchFrequency; // 周波数は切替周波数を共用
+            if (rawImage != null && fourStroke.OutputTexture != null)
+            {
+                rawImage.texture = fourStroke.OutputTexture;
+            }
+            CurrentSource = fourStroke.DominantSource; // ロガー用: 支配的なソースを記録
+        }
+        else if (mode == SourceMode.Alternate)
         {
             // 一時停止中は deltaTime = 0 なので切替タイマーも自動的に止まる
             elapsed += Time.deltaTime;
@@ -117,6 +155,11 @@ public class ViewSwitcher : MonoBehaviour
         elapsed = 0f;
         CurrentSource = (mode == SourceMode.PlaybackOnly) ? 1 : 0;
         ApplyTexture();
+        // 4ストロークの変調位相も揃えてリセットする（ライブ提示から始まる）
+        if (fourStroke != null)
+        {
+            fourStroke.ResetPhase();
+        }
     }
 
     /// <summary>
