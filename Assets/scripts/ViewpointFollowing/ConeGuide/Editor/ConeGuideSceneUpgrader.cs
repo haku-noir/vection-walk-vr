@@ -263,15 +263,27 @@ public static class ConeGuideSceneUpgrader
         ConeGuide cone = go.GetComponent<ConeGuide>();
         if (cone == null) cone = Undo.AddComponent<ConeGuide>(go);
 
+        // 姿勢処理（ヨー/ピッチ/ロール）は錐ごとに持つ．追従対象が違えば LPF の状態も
+        // 別であるべきなので，2つの錐で共有してはいけない
+        ConePoseFilter filter = go.GetComponent<ConePoseFilter>();
+        if (filter == null)
+        {
+            // 既定値は ConePoseFilter のフィールド初期値（ヨー=Raw / ピッチ=LPF 0.5Hz / ロール=Zero）
+            filter = Undo.AddComponent<ConePoseFilter>(go);
+        }
+
         Undo.RecordObject(cone, "Configure " + objectName);
         cone.kind = kind;
         cone.target = target;
+        cone.poseFilter = filter;
         if (shader != null) cone.shader = shader;
         go.layer = layer;
 
         EditorUtility.SetDirty(cone);
         Debug.Log("[ConeGuideSceneUpgrader] " + objectName + (created ? " を作成しました" : " を更新しました")
-            + "（追従対象: " + target.name + ", レイヤ: " + layer + "）");
+            + "（追従対象: " + target.name + ", レイヤ: " + layer
+            + ", 姿勢処理: ヨー=" + filter.yawMode + " ピッチ=" + filter.pitchMode
+            + " ロール=" + filter.rollMode + "）");
         return cone;
     }
 

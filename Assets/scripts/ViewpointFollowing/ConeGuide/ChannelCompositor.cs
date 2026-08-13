@@ -400,6 +400,15 @@ public class ChannelCompositor : MonoBehaviour
         GUI.Label(new Rect(Screen.width - 430, 10, 420, 20), "背景: " + bg);
         GUI.Label(new Rect(Screen.width - 430, 30, 420, 20),
             "箱: " + box + (DualColorActive ? "（別色モード）" : ""));
+
+        // 箱の姿勢処理（仕様 §3.2）。2つの錐は同じ設定で運用する前提なので Other 側を代表に出す
+        ConePoseFilter filter = coneOther != null ? coneOther.poseFilter : null;
+        if (filter != null)
+        {
+            GUI.Label(new Rect(Screen.width - 430, 50, 420, 20),
+                "箱の姿勢: ヨー=" + filter.yawMode + " ピッチ=" + filter.pitchMode
+                + " ロール=" + filter.rollMode + (filter.enabled ? "" : "（無効）"));
+        }
     }
 #endif
 }

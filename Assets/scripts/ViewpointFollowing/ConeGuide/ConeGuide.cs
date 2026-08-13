@@ -149,6 +149,7 @@ public class ConeGuide : MonoBehaviour
     {
         ApplyLayer();
         meshDirty = true;
+        ResetPose(); // 有効化のたびにフィルタ状態を取り直す（過渡応答を出さない）
     }
 
     private void OnDisable()
@@ -186,14 +187,24 @@ public class ConeGuide : MonoBehaviour
         // レイヤは kind から決まる（Inspector で kind を変えても追随させる）
         ApplyLayer();
 
-        // 頂点＝対象視点に追従する．回転は姿勢処理（M3）を通す
+        // 頂点＝対象視点に追従する．回転は姿勢処理（ヨー/ピッチ/ロール）を通す．
+        // poseFilter のチェックを外せば素通し（＝追従対象の姿勢そのまま）になる
         if (target != null)
         {
-            Quaternion rot = poseFilter != null
+            Quaternion rot = (poseFilter != null && poseFilter.enabled)
                 ? poseFilter.Filter(target.rotation)
                 : target.rotation;
             transform.SetPositionAndRotation(target.position, rot);
         }
+    }
+
+    /// <summary>
+    /// 姿勢処理の内部状態（LPF）をリセットする．試行開始時に呼ぶと，
+    /// 開始直後にフィルタの過渡応答が出ない．
+    /// </summary>
+    public void ResetPose()
+    {
+        if (poseFilter != null) poseFilter.ResetState();
     }
 
     /// <summary>
