@@ -2,6 +2,7 @@
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using UnityEngine.SceneManagement;
 
 /// <summary>
@@ -20,6 +21,12 @@ using UnityEngine.SceneManagement;
 /// - Cone_Other（頂点＝収録軌跡の視点）/ Cone_Self（頂点＝ライブ頭部）を作成し追従対象を配線
 /// - 既存カメラの Culling Mask から両レイヤを除外する
 ///
+/// M2 で行うこと:
+/// - 箱用 RenderTexture（Box_Other / Box_Self，アルファ付き・深度付き）を用意
+/// - LiveBoxCam / GhostBoxCam を各背景カメラの子として作成（透明クリア・該当レイヤのみ）
+/// - ChannelCompositor を ViewSwitcher と同じオブジェクトに追加し，4入力を配線
+///   （<b>既定は無効</b>．有効にしたときだけ新しい2チャンネル合成経路に切り替わる）
+///
 /// シーンは自動保存しない（既存シーンを勝手に上書きしないため）．
 /// 内容を確認してから手動で保存すること．
 /// </remarks>
@@ -29,6 +36,16 @@ public static class ConeGuideSceneUpgrader
     private const string ConeSelfObjectName = "Cone_Self";
     private const string ConeLineShaderPath =
         "Assets/scripts/ViewpointFollowing/ConeGuide/ConeLine.shader";
+    private const string ChannelCompositeShaderPath =
+        "Assets/scripts/ViewpointFollowing/ConeGuide/ChannelComposite.shader";
+
+    // 箱用 RenderTexture（ライブ映像用 CenterEye の複製として作る＝解像度・形式を揃える）
+    private const string LiveRTPath = "Assets/Textures/CenterEye.renderTexture";
+    private const string BoxOtherRTPath = "Assets/Textures/BoxOther.renderTexture";
+    private const string BoxSelfRTPath = "Assets/Textures/BoxSelf.renderTexture";
+
+    private const string LiveBoxCamName = "LiveBoxCam";
+    private const string GhostBoxCamName = "GhostBoxCam";
 
     /// <summary>箱カメラの名前（M2 で追加．Culling Mask の除外対象から外すために使う）</summary>
     private static readonly string[] BoxCameraNames = { "LiveBoxCam", "GhostBoxCam" };
@@ -81,10 +98,37 @@ public static class ConeGuideSceneUpgrader
         ConeGuide coneOther = EnsureCone(scene, ConeOtherObjectName,
             ConeGuide.ConeKind.Other, otherLayer, ghostAnchor, coneShader);
         // Cone_Self: 頂点＝ライブ頭部の視点。収録映像側にのみ描画される
-        EnsureCone(scene, ConeSelfObjectName,
+        ConeGuide coneSelf = EnsureCone(scene, ConeSelfObjectName,
             ConeGuide.ConeKind.Self, selfLayer, liveAnchor, coneShader);
 
-        // --- 4. 既存カメラの Culling Mask から両レイヤを除外する ---
+        // --- 4. 箱用 RenderTexture（アルファ付き・深度付き）を用意する ---
+        RenderTexture boxOtherRT = EnsureBoxRenderTexture(BoxOtherRTPath);
+        RenderTexture boxSelfRT = EnsureBoxRenderTexture(BoxSelfRTPath);
+        if (boxOtherRT == null || boxSelfRT == null)
+        {
+            EditorUtility.DisplayDialog("エラー",
+                "箱用 RenderTexture を用意できませんでした。\n複製元: " + LiveRTPath, "OK");
+            return;
+        }
+
+        // --- 5. 箱カメラを背景カメラの子として作る（姿勢と投影を完全に一致させる） ---
+        Camera liveBgCam = FindLiveCaptureCamera(scene);
+        Camera ghostBgCam = ghostAnchor.GetComponent<Camera>();
+        if (liveBgCam == null || ghostBgCam == null)
+        {
+            EditorUtility.DisplayDialog("エラー",
+                "背景カメラが見つかりません（ライブ: CenterEyeCapture / LiveReplayCamera、"
+                + "収録: GhostCamera / GhostReplayCamera）。", "OK");
+            return;
+        }
+        Camera liveBoxCam = EnsureBoxCamera(scene, LiveBoxCamName, liveBgCam, otherLayer, boxOtherRT);
+        Camera ghostBoxCam = EnsureBoxCamera(scene, GhostBoxCamName, ghostBgCam, selfLayer, boxSelfRT);
+
+        // --- 6. ChannelCompositor を用意して4入力を配線する（既定は無効） ---
+        string compositorNote = EnsureCompositor(scene, coneOther, coneSelf,
+            boxOtherRT, boxSelfRT, liveBoxCam, ghostBoxCam);
+
+        // --- 7. 既存カメラの Culling Mask から両レイヤを除外する ---
         int excluded = ExcludeConeLayersFromExistingCameras(scene, otherLayer, selfLayer);
 
         EditorSceneManager.MarkSceneDirty(scene);
@@ -94,12 +138,13 @@ public static class ConeGuideSceneUpgrader
             "シーン: " + scene.name + "\n\n" +
             "レイヤ: " + ConeGuideLayers.ConeOtherName + " (" + otherLayer + ") / "
             + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ")\n" +
-            "Cone_Other → " + ghostAnchor.name + " に追従\n" +
-            "Cone_Self  → " + liveAnchor.name + " に追従\n" +
-            "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n\n" +
-            "錐は箱カメラ（M2で追加）からのみ見えるため、現時点では Game ビューに映りません。\n" +
-            "見た目を確認するには Scene ビュー、または\n" +
-            "「Tools > 視点追従実験 > 錐ガイド: プレビュー表示を切替」を使ってください。\n\n" +
+            "Cone_Other → " + ghostAnchor.name + " に追従（" + LiveBoxCamName + " が撮影）\n" +
+            "Cone_Self  → " + liveAnchor.name + " に追従（" + GhostBoxCamName + " が撮影）\n" +
+            "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n" +
+            compositorNote + "\n\n" +
+            "【使い方】ChannelCompositor のチェックを入れると2チャンネル合成経路に\n" +
+            "切り替わります（オフの間は従来どおり ViewSwitcher が表示を担当）。\n" +
+            "背景モード・箱モード・極性・周波数は Inspector で切り替えられます。\n\n" +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -228,6 +273,154 @@ public static class ConeGuideSceneUpgrader
         Debug.Log("[ConeGuideSceneUpgrader] " + objectName + (created ? " を作成しました" : " を更新しました")
             + "（追従対象: " + target.name + ", レイヤ: " + layer + "）");
         return cone;
+    }
+
+    /// <summary>
+    /// 箱用 RenderTexture を用意する．ライブ映像用の CenterEye を複製して作るので
+    /// 解像度・形式がライブ映像と揃う．<b>アルファ付き</b>（線の存在＝箱マスクを運ぶため）と
+    /// <b>深度付き</b>（稜線オクルージョンに必要）であることを明示的に確認する．
+    /// </summary>
+    private static RenderTexture EnsureBoxRenderTexture(string assetPath)
+    {
+        RenderTexture rt = AssetDatabase.LoadAssetAtPath<RenderTexture>(assetPath);
+        if (rt == null)
+        {
+            if (!AssetDatabase.CopyAsset(LiveRTPath, assetPath))
+            {
+                Debug.LogError("[ConeGuideSceneUpgrader] RenderTexture の複製に失敗しました: " + LiveRTPath);
+                return null;
+            }
+            rt = AssetDatabase.LoadAssetAtPath<RenderTexture>(assetPath);
+            Debug.Log("[ConeGuideSceneUpgrader] 箱用 RenderTexture を作成しました: " + assetPath);
+        }
+        if (rt == null) return null;
+
+        bool changed = false;
+        if (rt.IsCreated()) rt.Release(); // 生成済みだと形式を変更できない
+
+        // アルファ付きでないと箱マスクを運べない（合成シェーダが a を参照する）
+        if (rt.graphicsFormat != GraphicsFormat.R8G8B8A8_UNorm
+            && rt.graphicsFormat != GraphicsFormat.R8G8B8A8_SRGB)
+        {
+            rt.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
+            changed = true;
+        }
+        // 深度が無いと錐の内部で ZWrite/ZTest が効かず稜線オクルージョンが成立しない
+        if (rt.depth < 24)
+        {
+            rt.depth = 24;
+            changed = true;
+        }
+        if (changed)
+        {
+            EditorUtility.SetDirty(rt);
+            AssetDatabase.SaveAssets();
+            Debug.Log("[ConeGuideSceneUpgrader] " + assetPath + " をアルファ付き・深度付きに設定しました");
+        }
+        return rt;
+    }
+
+    /// <summary>
+    /// 箱カメラを用意する．背景カメラの<b>子</b>として localPosition=0 / localRotation=identity で
+    /// 置くことで，姿勢が常に背景カメラと完全一致する（仕様 §2.1）．
+    /// 該当レイヤだけを描き，背景を透明でクリアする．
+    /// </summary>
+    private static Camera EnsureBoxCamera(Scene scene, string cameraName, Camera source,
+        int layer, RenderTexture target)
+    {
+        Transform existing = FindFirst(scene, new[] { cameraName });
+        GameObject go;
+        if (existing != null)
+        {
+            go = existing.gameObject;
+        }
+        else
+        {
+            go = new GameObject(cameraName, typeof(Camera));
+            Undo.RegisterCreatedObjectUndo(go, "Create " + cameraName);
+        }
+
+        go.layer = 0; // カメラ自身のレイヤは描画に影響しない
+
+        Camera cam = go.GetComponent<Camera>();
+        if (cam == null) cam = Undo.AddComponent<Camera>(go);
+
+        Undo.RecordObject(cam, "Configure " + cameraName);
+        cam.CopyFrom(source);                              // FOV・near/far・投影を背景カメラに合わせる
+        cam.cullingMask = 1 << layer;                      // その錐だけを描く
+        cam.clearFlags = CameraClearFlags.SolidColor;
+        cam.backgroundColor = new Color(0f, 0f, 0f, 0f);   // 透明クリア（アルファ0＝箱がない場所）
+        cam.targetTexture = target;
+        cam.stereoTargetEye = StereoTargetEyeMask.None;    // HMD へ直接出力しない
+        cam.depth = source.depth + 1;                      // 背景カメラの後に描く
+        cam.useOcclusionCulling = false;                   // 錐しか描かないので不要
+        cam.allowHDR = false;
+        cam.allowMSAA = false;
+
+        // 背景カメラの子にして姿勢を完全一致させる．
+        // CopyFrom が投影行列を書き換える可能性があるため，Transform の確定は必ずこの後に行う
+        Undo.SetTransformParent(go.transform, source.transform, "Parent " + cameraName);
+        go.transform.localPosition = Vector3.zero;
+        go.transform.localRotation = Quaternion.identity;
+        go.transform.localScale = Vector3.one;
+        cam.ResetWorldToCameraMatrix();  // CopyFrom が持ち込みうる固定行列を捨て，親追従に戻す
+        cam.ResetProjectionMatrix();
+        cam.ResetAspect();               // targetTexture のアスペクトから計算し直させる
+
+        EditorUtility.SetDirty(cam);
+        Debug.Log("[ConeGuideSceneUpgrader] " + cameraName + (existing != null ? " を更新" : " を作成")
+            + "しました（親: " + source.name + ", レイヤ: " + layer + ", 出力: " + target.name + "）");
+        return cam;
+    }
+
+    /// <summary>
+    /// ChannelCompositor を ViewSwitcher と同じオブジェクトに用意し，4入力を配線する．
+    /// 表示先・背景テクスチャは既存 ViewSwitcher の配線をそのまま流用するため，
+    /// シーン構成に依存した名前探索をしなくて済む．
+    /// </summary>
+    /// <returns>ダイアログに出す1行の結果メッセージ</returns>
+    private static string EnsureCompositor(Scene scene, ConeGuide coneOther, ConeGuide coneSelf,
+        RenderTexture boxOtherRT, RenderTexture boxSelfRT, Camera liveBoxCam, Camera ghostBoxCam)
+    {
+        List<ViewSwitcher> switchers = CollectComponents<ViewSwitcher>(scene);
+        if (switchers.Count == 0)
+        {
+            Debug.LogWarning("[ConeGuideSceneUpgrader] ViewSwitcher が見つからないため ChannelCompositor は追加しませんでした");
+            return "ChannelCompositor: ViewSwitcher が無いため未追加";
+        }
+        ViewSwitcher switcher = switchers[0];
+        GameObject host = switcher.gameObject;
+
+        ChannelCompositor compositor = host.GetComponent<ChannelCompositor>();
+        bool created = compositor == null;
+        if (created)
+        {
+            compositor = Undo.AddComponent<ChannelCompositor>(host);
+            // 既定は無効。オンにしたときだけ新しい合成経路に切り替わる
+            // （オフの間は ViewSwitcher の従来動作がそのまま残る）
+            compositor.enabled = false;
+        }
+
+        Undo.RecordObject(compositor, "Configure ChannelCompositor");
+        compositor.viewSwitcher = switcher;
+        compositor.rawImage = switcher.rawImage;
+        compositor.bgLiveTexture = switcher.liveTexture;
+        compositor.bgGhostTexture = switcher.playbackTexture;
+        compositor.boxOtherTexture = boxOtherRT;
+        compositor.boxSelfTexture = boxSelfRT;
+        compositor.coneOther = coneOther;
+        compositor.coneSelf = coneSelf;
+        compositor.liveBoxCamera = liveBoxCam;
+        compositor.ghostBoxCamera = ghostBoxCam;
+        if (compositor.shader == null)
+        {
+            compositor.shader = AssetDatabase.LoadAssetAtPath<Shader>(ChannelCompositeShaderPath);
+        }
+
+        EditorUtility.SetDirty(compositor);
+        Debug.Log("[ConeGuideSceneUpgrader] ChannelCompositor を " + host.name
+            + (created ? " に追加しました（既定は無効）" : " で更新しました"));
+        return "ChannelCompositor: " + host.name + (created ? " に追加（既定は無効）" : " を更新");
     }
 
     /// <summary>
