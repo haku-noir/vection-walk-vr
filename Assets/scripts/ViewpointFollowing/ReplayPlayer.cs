@@ -59,6 +59,20 @@ public class ReplayPlayer : MonoBehaviour
     [Tooltip("表示の切替・4ストローク合成を担う ViewSwitcher")]
     public ViewSwitcher viewSwitcher;
 
+    /// <summary>
+    /// 四角錐ガイドの2チャンネル合成器（09 仕様）．未設定なら従来どおり ViewSwitcher が表示を担う．
+    /// </summary>
+    [Tooltip("錐ガイドの2チャンネル合成器（未設定なら従来の ViewSwitcher 経路）")]
+    public ChannelCompositor channelCompositor;
+
+    /// <summary>
+    /// 錐ガイド（背景＋箱の2チャンネル合成）を使うか．
+    /// 「収録後にパラメータを変えて再合成する」用途なので <b>Reswitch モードでのみ</b>有効になる．
+    /// オフの間は ChannelCompositor が無効化され，従来の ViewSwitcher 経路がそのまま動く．
+    /// </summary>
+    [Tooltip("錐ガイドを使うか（Reswitchモードでのみ有効。オフなら従来どおり）")]
+    public bool coneGuideEnabled = false;
+
     /// <summary>視野として表示している UI（RawImage）</summary>
     [Tooltip("視野として表示しているUI（RawImage）")]
     public RawImage rawImage;
@@ -135,6 +149,10 @@ public class ReplayPlayer : MonoBehaviour
             lastDisplayMode = displayMode;
             ConfigureDisplay();
         }
+
+        // 錐ガイドの有効・無効は Inspector から実行中に変えられるよう毎フレーム反映する．
+        // 表示モードの反映（ConfigureDisplay）より後に置くこと（下の ApplyConeGuide 参照）
+        ApplyConeGuide();
 
         if (playing)
         {
@@ -240,6 +258,26 @@ public class ReplayPlayer : MonoBehaviour
             case DisplayMode.PlayedOnly: EnableSwitcher(ViewSwitcher.SourceMode.PlaybackOnly); break;
             case DisplayMode.Reswitch: EnableSwitcher(ViewSwitcher.SourceMode.Alternate); break;
         }
+    }
+
+    /// <summary>
+    /// 錐ガイド（2チャンネル合成）の有効・無効を，設定と表示モードに合わせる．
+    /// 錐ガイドは「収録後にパラメータを変えて再合成する」ものなので <b>Reswitch</b> が土俵であり，
+    /// 他の表示モード（実験時の再現・片側のみ）では止める．
+    /// 有効な間は ChannelCompositor 側が ViewSwitcher を無効化して表示を引き取る．
+    /// </summary>
+    private void ApplyConeGuide()
+    {
+        if (channelCompositor == null) return;
+        bool active = coneGuideEnabled && isFollowingFile && displayMode == DisplayMode.Reswitch;
+
+        // 切り替わった瞬間だけ触る（ChannelCompositor の OnEnable で位相がリセットされる）
+        if (channelCompositor.enabled == active) return;
+        channelCompositor.enabled = active;
+
+        // 合成器は OnDisable で「表示を引き取る前の ViewSwitcher の状態」に戻す．
+        // それは Reswitch 用の状態なので，止めた直後に今の表示モードへ張り直す
+        if (!active) ConfigureDisplay();
     }
 
     /// <summary>ViewSwitcher に表示を委ねる（切替・4ストロークは ViewSwitcher が担当）</summary>
@@ -491,7 +529,19 @@ public class ReplayPlayer : MonoBehaviour
             GUI.Label(new Rect(10, 52, 800, 20),
                 "モード: " + displayMode + "   切替周波数: " + viewSwitcher.switchFrequency.ToString("F1") + " Hz"
                 + "   4ストローク: " + fs + (displayMode == DisplayMode.Reswitch ? "" : "（Reswitchで反映）"));
-            GUI.Label(new Rect(10, 72, 900, 20),
+
+            int y = 72;
+            // 錐ガイドを使える構成のときは、その状態も出す（条件の取り違えを防ぐ）
+            if (channelCompositor != null)
+            {
+                string cone = !coneGuideEnabled ? "OFF"
+                    : channelCompositor.enabled
+                        ? "ON（背景=" + channelCompositor.bgMode + " / 箱=" + channelCompositor.boxMode + "）"
+                        : "ON（Reswitchで反映）";
+                GUI.Label(new Rect(10, y, 900, 20), "錐ガイド: " + cone);
+                y += 20;
+            }
+            GUI.Label(new Rect(10, y, 900, 20),
                 "Space:再生/停止  R:最初から  ←/→:±5秒  M:表示モード  ↑↓:周波数  4:4ストローク  V:極性  1/2/3:環境密度");
         }
         else

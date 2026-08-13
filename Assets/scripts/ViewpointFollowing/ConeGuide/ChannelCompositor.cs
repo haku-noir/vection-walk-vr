@@ -201,6 +201,15 @@ public class ChannelCompositor : MonoBehaviour
     private Material material;
     private bool switcherWasEnabled;
 
+    // 別色モードと箱4ストロークの排他処理（仕様 §2.3 / §3.1）の状態
+    private bool dualColorWarned;      // 警告ログを1回だけ出すためのフラグ
+    private bool dualColorAutoDisabled; // HUD に「自動無効化した」旨を出すためのフラグ
+
+    /// <summary>
+    /// 箱の4ストロークと排他だったため別色モードを自動無効化したか（HUD 表示用）
+    /// </summary>
+    public bool DualColorAutoDisabled { get { return dualColorAutoDisabled; } }
+
     private void OnEnable()
     {
         // 表示を引き取る（ViewSwitcher の単一テクスチャ経路は壊さず，止めるだけ）
@@ -249,6 +258,9 @@ public class ChannelCompositor : MonoBehaviour
         // 表示の担当を確実にこちらへ寄せる（ReplayPlayer など他所が ViewSwitcher を
         // 有効化し直しても，この合成器が有効な間は合成結果を出す）
         if (viewSwitcher != null && viewSwitcher.enabled) viewSwitcher.enabled = false;
+
+        // 箱の4ストロークは輝度変調方式なので別色モードとは両立しない（仕様 §2.3）
+        EnforceDualColorExclusivity();
 
         float dt = Time.deltaTime; // 一時停止中は 0 → 変調も止まる
 
@@ -328,6 +340,41 @@ public class ChannelCompositor : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 箱の4ストロークと別色モードの排他を強制する（仕様 §2.3 / §3.1）．
+    ///
+    /// 箱の4ストロークは色情報を輝度に潰す<b>輝度変調方式</b>で実現しているため，
+    /// 近＝シアン／遠＝マゼンタの別色モードとは両立しない．
+    /// この組合せが選ばれたら<b>別色モードを自動的に無効化</b>し，警告と HUD 表示を出す．
+    /// </summary>
+    /// <remarks>
+    /// 奥行き手がかりは稜線オクルージョン（形状による手がかり，仕様 §1.6）が担うので，
+    /// 別色モードを切っても全条件で同じ奥行き手がかりが提供される．
+    /// </remarks>
+    private void EnforceDualColorExclusivity()
+    {
+        if (boxMode != BoxMode.FourStroke)
+        {
+            // 4ストロークを抜けたら状態を戻す（再び選ばれたらもう一度警告する）
+            dualColorWarned = false;
+            dualColorAutoDisabled = false;
+            return;
+        }
+        if (!DualColorActive) return;
+
+        if (coneOther != null) coneOther.dualColorMode = false;
+        if (coneSelf != null) coneSelf.dualColorMode = false;
+        dualColorAutoDisabled = true;
+
+        if (!dualColorWarned)
+        {
+            Debug.LogWarning("[ChannelCompositor] 箱の4ストロークは輝度変調方式（仕様 §2.3）のため"
+                + "別色モードと排他です。別色モードを自動的に無効化しました。"
+                + "\n奥行き手がかりは稜線オクルージョン（§1.6）が担うため、単色でも前後の多義性は解消されます。");
+            dualColorWarned = true;
+        }
+    }
+
     /// <summary>提示条件から波形を決める</summary>
     private static ChannelPhase.Waveform WaveformOf(BackgroundMode mode)
     {
@@ -400,6 +447,16 @@ public class ChannelCompositor : MonoBehaviour
         GUI.Label(new Rect(Screen.width - 430, 10, 420, 20), "背景: " + bg);
         GUI.Label(new Rect(Screen.width - 430, 30, 420, 20),
             "箱: " + box + (DualColorActive ? "（別色モード）" : ""));
+
+        // 別色モードを自動無効化した場合は目立つように出す（条件の取り違えを防ぐ）
+        if (dualColorAutoDisabled)
+        {
+            Color prev = GUI.color;
+            GUI.color = new Color(1f, 0.85f, 0.3f);
+            GUI.Label(new Rect(Screen.width - 430, 70, 420, 40),
+                "別色モードを自動無効化しました\n（箱の4ストロークは輝度変調方式のため排他）");
+            GUI.color = prev;
+        }
 
         // 箱の姿勢処理（仕様 §3.2）。2つの錐は同じ設定で運用する前提なので Other 側を代表に出す
         ConePoseFilter filter = coneOther != null ? coneOther.poseFilter : null;

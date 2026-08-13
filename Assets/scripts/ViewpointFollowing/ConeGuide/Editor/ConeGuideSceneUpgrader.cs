@@ -430,6 +430,18 @@ public static class ConeGuideSceneUpgrader
         }
 
         EditorUtility.SetDirty(compositor);
+
+        // 再生確認シーンでは ReplayPlayer が表示モードと連動して合成器を制御する
+        // （錐ガイドは Reswitch＝収録後の再合成が土俵なので、そこでのみ有効になる）
+        foreach (ReplayPlayer replay in CollectComponents<ReplayPlayer>(scene))
+        {
+            Undo.RecordObject(replay, "Wire ChannelCompositor");
+            replay.channelCompositor = compositor;
+            EditorUtility.SetDirty(replay);
+            Debug.Log("[ConeGuideSceneUpgrader] ReplayPlayer に ChannelCompositor を配線しました"
+                + "（ReplayPlayer > Cone Guide Enabled をオンにし、表示モードを Reswitch にすると有効）");
+        }
+
         Debug.Log("[ConeGuideSceneUpgrader] ChannelCompositor を " + host.name
             + (created ? " に追加しました（既定は無効）" : " で更新しました"));
         return "ChannelCompositor: " + host.name + (created ? " に追加（既定は無効）" : " を更新");
