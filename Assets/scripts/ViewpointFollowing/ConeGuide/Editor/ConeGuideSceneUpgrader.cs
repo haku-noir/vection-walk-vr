@@ -101,6 +101,17 @@ public static class ConeGuideSceneUpgrader
         ConeGuide coneSelf = EnsureCone(scene, ConeSelfObjectName,
             ConeGuide.ConeKind.Self, selfLayer, liveAnchor, coneShader);
 
+        // 2つの錐は同じ見えでなければならない（片方だけ変えると誤差ゼロでも差が残る）。
+        // Cone_Self が Cone_Other から幾何・見た目・姿勢処理の条件を引く形にしておく
+        if (coneSelf.mirrorFrom != coneOther)
+        {
+            Undo.RecordObject(coneSelf, "Sync cone parameters");
+            coneSelf.mirrorFrom = coneOther;
+            EditorUtility.SetDirty(coneSelf);
+            Debug.Log("[ConeGuideSceneUpgrader] Cone_Self のパラメータを Cone_Other に同期させました"
+                + "（以後は Cone_Other 側を編集してください）");
+        }
+
         // --- 4. 箱用 RenderTexture（アルファ付き・深度付き）を用意する ---
         RenderTexture boxOtherRT = EnsureBoxRenderTexture(BoxOtherRTPath);
         RenderTexture boxSelfRT = EnsureBoxRenderTexture(BoxSelfRTPath);

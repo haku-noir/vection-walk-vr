@@ -103,6 +103,25 @@ public class ConeGuide : MonoBehaviour
     [Tooltip("別色モード時の遠断面の色")]
     public Color farColor = new Color(1.00f, 0.25f, 0.90f);
 
+    [Header("パラメータの同期")]
+    /// <summary>
+    /// 幾何・見た目のパラメータを<b>この錐からコピーする</b>（同期元）．None なら同期しない．
+    ///
+    /// 2つの錐は同じ見えでなければならない．片方だけ大きさや線の設定を変えると，
+    /// 誤差ゼロでも2つの箱に差が残り，時分割で消えるはずのワブル（仕様 §1.4）が消えなくなる．
+    /// 錐ごとに独立したコンポーネントなので取り違えやすく，それを防ぐための仕組み．
+    /// </summary>
+    /// <remarks>
+    /// 同期されるのは幾何・見た目（d1 / d2 / α / 断面枚数 / 線幅 / 線の色 / 稜線 / 別色モード）と，
+    /// 姿勢処理の条件（ヨー・ピッチ・ロールの処理とカットオフ）．
+    /// 追従対象・種別・シェーダ・フィルタの内部状態は錐ごとの固有値なのでコピーしない．
+    ///
+    /// 「引く」側が同期元を参照する形にしてあるので，2つの錐の更新順に依存せず
+    /// 同じフレームで値が揃う．
+    /// </remarks>
+    [Tooltip("パラメータの同期元（None なら同期しない）。2つの錐は同じ見えである必要がある")]
+    public ConeGuide mirrorFrom;
+
     [Header("シェーダ（未設定なら自動検索）")]
     /// <summary>線の描画シェーダ（Hidden/ConeLine）</summary>
     [Tooltip("線の描画シェーダ（Hidden/ConeLine。未設定なら自動検索）")]
@@ -127,6 +146,8 @@ public class ConeGuide : MonoBehaviour
     /// <summary>形状パラメータの変更検知用（前回ビルド時の値）</summary>
     private GeometryKey lastKey;
     private bool meshDirty = true;
+    /// <summary>相互参照の警告を1回だけ出すためのフラグ</summary>
+    private bool mirrorCycleWarned;
 
     /// <summary>現在の断面距離（近い順）．HUD・デバッグ用</summary>
     public float NearDistance { get { return Mathf.Min(nearDistance, farDistance); } }
@@ -175,6 +196,9 @@ public class ConeGuide : MonoBehaviour
     {
         if (!EnsureResources()) return;
 
+        // 同期元があれば先に値を引く（このあとの変更検知でメッシュも同じフレームで作り直される）
+        SyncFromMirrorSource();
+
         // 形状パラメータが変わっていたらメッシュを作り直す
         GeometryKey key = GeometryKey.From(this);
         if (meshDirty || !key.Equals(lastKey))
@@ -205,6 +229,59 @@ public class ConeGuide : MonoBehaviour
     public void ResetPose()
     {
         if (poseFilter != null) poseFilter.ResetState();
+    }
+
+    /// <summary>
+    /// 同期元の錐から幾何・見た目と姿勢処理の条件をコピーする．
+    /// 値が同じときは代入しない（編集中に無駄にシーンを変更済みにしないため）．
+    /// </summary>
+    private void SyncFromMirrorSource()
+    {
+        ConeGuide source = mirrorFrom;
+        if (source == null || source == this) return;
+
+        // 相互参照は互いに上書きし合って発散するので同期しない
+        if (source.mirrorFrom == this)
+        {
+            if (!mirrorCycleWarned)
+            {
+                Debug.LogWarning("[ConeGuide] " + name + " と " + source.name
+                    + " が互いを同期元にしています。どちらか一方の Mirror From を None にしてください。", this);
+                mirrorCycleWarned = true;
+            }
+            return;
+        }
+        mirrorCycleWarned = false;
+
+        // --- 幾何・見た目（GeometryKey が対象そのもの） ---
+        if (!GeometryKey.From(source).Equals(GeometryKey.From(this)))
+        {
+            nearDistance = source.nearDistance;
+            farDistance = source.farDistance;
+            halfAngleDeg = source.halfAngleDeg;
+            sectionCount = source.sectionCount;
+            lineWidthDeg = source.lineWidthDeg;
+            lineColor = source.lineColor;
+            drawRidges = source.drawRidges;
+            ridgeExtendToApex = source.ridgeExtendToApex;
+            dualColorMode = source.dualColorMode;
+            nearColor = source.nearColor;
+            farColor = source.farColor;
+        }
+
+        // --- 姿勢処理の条件（仕様 §3.2 は錐ごとに条件を分けていない） ---
+        // フィルタの内部状態（LPF）は追従対象ごとに別なのでコピーしない
+        ConePoseFilter mine = poseFilter;
+        ConePoseFilter theirs = source.poseFilter;
+        if (mine == null || theirs == null || mine == theirs) return;
+
+        if (mine.yawMode != theirs.yawMode) mine.yawMode = theirs.yawMode;
+        if (mine.pitchMode != theirs.pitchMode) mine.pitchMode = theirs.pitchMode;
+        if (mine.rollMode != theirs.rollMode) mine.rollMode = theirs.rollMode;
+        if (mine.yawCutoffHz != theirs.yawCutoffHz) mine.yawCutoffHz = theirs.yawCutoffHz;
+        if (mine.pitchCutoffHz != theirs.pitchCutoffHz) mine.pitchCutoffHz = theirs.pitchCutoffHz;
+        if (mine.rollCutoffHz != theirs.rollCutoffHz) mine.rollCutoffHz = theirs.rollCutoffHz;
+        if (mine.enabled != theirs.enabled) mine.enabled = theirs.enabled;
     }
 
     /// <summary>
