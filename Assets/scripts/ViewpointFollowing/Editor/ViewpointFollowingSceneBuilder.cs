@@ -151,6 +151,10 @@ public static class ViewpointFollowingSceneBuilder
     /// <summary>
     /// 再生確認シーン（ViewpointFollowingReplay.unity）を自動構築する．
     /// 実験シーンと同じ環境の中で，保存済み CSV の視点を通常カメラで再生する（HMD不要）．
+    ///
+    /// ライブ姿勢と収録姿勢を2台のカメラで同時に再レンダリングし，実験シーンと同じ
+    /// ViewSwitcher / FourStrokeCompositor で再合成するため，収録後に切替周波数の変更や
+    /// 4ストロークの追加ができる（表示モード Reswitch）．
     /// </summary>
     [MenuItem("Tools/視点追従実験/再生確認シーンを生成")]
     public static void BuildReplayScene()
@@ -159,38 +163,89 @@ public static class ViewpointFollowingSceneBuilder
 
         materialCache.Clear();
 
-        // --- 1. 新規シーン（Main Camera + Directional Light 付き）を作成 ---
+        // --- 1. 新規シーン（Directional Light 付き）を作成 ---
         var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+        GameObject mainCam = GameObject.Find("Main Camera");
+        if (mainCam != null) Object.DestroyImmediate(mainCam); // 専用カメラを作り直すため既定は削除
 
-        // Main Camera を再生用カメラとして流用する
-        GameObject camGO = GameObject.Find("Main Camera");
-        if (camGO == null)
+        // --- 2. 映像テクスチャ（ライブ=CenterEye / 収録=PlaybackEye）を用意 ---
+        RenderTexture liveRT = AssetDatabase.LoadAssetAtPath<RenderTexture>(LiveRTPath);
+        RenderTexture playbackRT = AssetDatabase.LoadAssetAtPath<RenderTexture>(PlaybackRTPath);
+        if (playbackRT == null && liveRT != null)
         {
-            camGO = new GameObject("ReplayCamera");
-            camGO.AddComponent<Camera>();
-            camGO.AddComponent<AudioListener>();
+            if (AssetDatabase.CopyAsset(LiveRTPath, PlaybackRTPath))
+                playbackRT = AssetDatabase.LoadAssetAtPath<RenderTexture>(PlaybackRTPath);
         }
-        camGO.name = "ReplayCamera";
-        Camera replayCam = camGO.GetComponent<Camera>();
-        replayCam.fieldOfView = 90f;                          // 実験時の撮影カメラに合わせる
-        replayCam.nearClipPlane = 0.1f;
-        replayCam.stereoTargetEye = StereoTargetEyeMask.None; // HMD には出力しない（Gameビュー専用）
+        if (liveRT == null || playbackRT == null)
+        {
+            EditorUtility.DisplayDialog("エラー",
+                "映像テクスチャが用意できませんでした:\n" + LiveRTPath + "\n" + PlaybackRTPath, "OK");
+            return;
+        }
 
-        // --- 2. 実験シーンと同じ床・環境・マーカーを構築 ---
+        // --- 3. 実験シーンと同じ床・環境・マーカーを構築 ---
         BuildFloorAndMarkers();
         GameObject envRich, envSparse;
         BuildEnvironment(out envRich, out envSparse);
 
-        // --- 3. ReplayRig（再生管理オブジェクト）を作成し配線 ---
+        // --- 4. 再生用カメラ2台（ライブ姿勢用 / 収録姿勢用）を作成 ---
+        // それぞれ RenderTexture へ描画し，画面には出さない（合成結果を RawImage で表示する）
+        Camera liveCam = CreateReplayCamera("LiveReplayCamera", liveRT);
+        liveCam.gameObject.AddComponent<AudioListener>();
+        Camera ghostCam = CreateReplayCamera("GhostReplayCamera", playbackRT);
+
+        // 画面クリア専用カメラ（Overlay Canvas の背後を黒で塗る．シーンは描画しない）
+        GameObject screenGO = new GameObject("ScreenCamera", typeof(Camera));
+        Camera screenCam = screenGO.GetComponent<Camera>();
+        screenCam.clearFlags = CameraClearFlags.SolidColor;
+        screenCam.backgroundColor = Color.black;
+        screenCam.cullingMask = 0;                              // 何も描かない
+        screenCam.depth = -1;
+        screenCam.stereoTargetEye = StereoTargetEyeMask.None;
+
+        // --- 5. 表示用 Canvas + RawImage（全画面）を作成 ---
+        GameObject canvasGO = new GameObject("ReplayCanvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+        var canvas = canvasGO.GetComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        GameObject rawGO = new GameObject("ReplayRawImage", typeof(RawImage));
+        rawGO.transform.SetParent(canvasGO.transform, false);
+        var rawImage = rawGO.GetComponent<RawImage>();
+        RectTransform rrt = rawImage.rectTransform;
+        rrt.anchorMin = Vector2.zero;
+        rrt.anchorMax = Vector2.one;
+        rrt.offsetMin = Vector2.zero;
+        rrt.offsetMax = Vector2.zero;
+        rawImage.texture = liveRT;
+
+        // --- 6. ReplayRig（再生管理オブジェクト）を作成し配線 ---
         GameObject rigGO = new GameObject("ReplayRig");
         var replay = rigGO.AddComponent<ReplayPlayer>();
+        var switcher = rigGO.AddComponent<ViewSwitcher>();
+        var fourStroke = rigGO.AddComponent<FourStrokeCompositor>();
         var envSwitcher = rigGO.AddComponent<EnvironmentSwitcher>();
 
-        replay.replayCamera = replayCam;
+        // ViewSwitcher（実験シーンと同じ合成・切替ロジックを流用）
+        switcher.rawImage = rawImage;
+        switcher.liveTexture = liveRT;
+        switcher.playbackTexture = playbackRT;
+        switcher.fourStroke = fourStroke;
+        switcher.mode = ViewSwitcher.SourceMode.LiveOnly;
+        switcher.debugTint = false;        // バナーで表示ソースを示すため着色はしない
+        switcher.enabled = false;          // 既定 AsExperienced では ReplayPlayer が表示を担う
+
+        fourStroke.shader = AssetDatabase.LoadAssetAtPath<Shader>(FourStrokeShaderPath);
+
+        replay.liveCamera = liveCam;
+        replay.ghostCamera = ghostCam;
+        replay.viewSwitcher = switcher;
+        replay.rawImage = rawImage;
+        replay.liveTexture = liveRT;
+        replay.playbackTexture = playbackRT;
+
         envSwitcher.envRich = envRich;
         envSwitcher.envSparse = envSparse;
 
-        // --- 4. シーンを保存 ---
+        // --- 7. シーンを保存 ---
         EditorSceneManager.SaveScene(scene, ReplayScenePath);
         AssetDatabase.SaveAssets();
 
@@ -199,12 +254,27 @@ public static class ViewpointFollowingSceneBuilder
             "保存先: " + ReplayScenePath + "\n\n" +
             "再生するだけで最新のCSV（trajectory/following_results）が自動で読み込まれます。\n" +
             "ファイル指定は ReplayRig > ReplayPlayer > File Name。\n\n" +
-            "表示モード（following時）:\n" +
+            "表示モード（following時、Mキーで巡回）:\n" +
             "- AsExperienced: 実験時と同じ時分割切替を再現\n" +
-            "- LiveOnly: 被験者が移動した頭部視点のみ\n" +
-            "- PlayedOnly: 提示された収録映像側のみ\n\n" +
-            "操作: Space=再生/停止, R=最初から, ←/→=±5秒, 1/2/3=環境密度",
+            "- LiveOnly / PlayedOnly: ライブ / 収録映像側のみ\n" +
+            "- Reswitch: 収録後に切替周波数を変更・4ストロークを追加\n\n" +
+            "操作: Space=再生/停止, R=最初から, ←/→=±5秒,\n" +
+            "M=表示モード, ↑↓=周波数, 4=4ストローク, V=極性, 1/2/3=環境密度",
             "OK");
+    }
+
+    /// <summary>
+    /// 再生用カメラを作成する（指定 RenderTexture へ描画し，画面には直接出さない）
+    /// </summary>
+    private static Camera CreateReplayCamera(string name, RenderTexture target)
+    {
+        GameObject go = new GameObject(name, typeof(Camera));
+        Camera cam = go.GetComponent<Camera>();
+        cam.fieldOfView = 90f;                          // 実験時の撮影カメラに合わせる
+        cam.nearClipPlane = 0.1f;
+        cam.targetTexture = target;                     // RT へ描画（合成結果を RawImage で表示）
+        cam.stereoTargetEye = StereoTargetEyeMask.None; // HMD には出力しない
+        return cam;
     }
 
     /// <summary>

@@ -96,19 +96,24 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 
 ## 再生確認シーン（ViewpointFollowingReplay.unity）
 
-実験後に「そのとき HMD に表示していた映像」を Game ビューで見直すためのシーン。**HMD 不要**。
+実験後に記録した視点を Game ビューで見直すためのシーン。**HMD 不要**。
 メニュー **Tools > 視点追従実験 > 再生確認シーンを生成** で作成する（初回のみ）。
+
+ライブ姿勢と収録姿勢を**2台のカメラで同時に再レンダリング**し、実験シーンと同じ
+`ViewSwitcher` / `FourStrokeCompositor` で再合成する構成のため、**そのとき表示していた映像を
+再現するだけでなく、収録後にパラメータを変えて表示を作り直せる**（切替周波数の変更・4ストロークの追加）。
 
 - シーンを再生すると、データフォルダ内で**最も新しい CSV**（trajectory / following_results）を
   自動で読み込んで再生が始まる。ファイル指定は ReplayRig > ReplayPlayer > **File Name**
-- `trajectory_*.csv` → 収録走の頭部視点をそのまま再生
-- `following_results_*.csv` → **Display Mode** で表示を選択:
+- `trajectory_*.csv` → 収録走の頭部視点をそのまま再生（ライブのみ。周波数変更・4ストロークは無効）
+- `following_results_*.csv` → **Display Mode**（M キーで巡回）で表示を選択:
 
   | モード | 表示内容 |
   |---|---|
   | AsExperienced | 実験時と同じ時分割切替を再現（source列に従いライブ⇔収録を切替） |
   | LiveOnly | 被験者が実際に移動した頭部（ライブ）の視点のみ |
   | PlayedOnly | 提示された収録映像側の視点のみ |
+  | **Reswitch** | **収録後にパラメータを変えて再合成**（切替周波数の変更・4ストロークの追加） |
 
 - 画面上部のバナーで表示中の視点が分かる（**オレンジ=収録映像 / 青=ライブ**）
 
@@ -117,10 +122,20 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 | Space | 再生 / 一時停止 |
 | R | 最初から再生 |
 | ← / → | 5秒 巻き戻し / 早送り |
+| M | 表示モード切替（AsExperienced → LiveOnly → PlayedOnly → Reswitch） |
+| ↑ / ↓ | 切替周波数 ±0.5Hz（**Reswitch** で反映） |
+| 4 | 4ストローク合成 ON/OFF（**Reswitch** で反映） → [08](08_fourstroke.md) |
+| V | 4ストロークの極性切替（Enhance → Reversal → Zero） |
 | 1 / 2 / 3 | 環境密度切替（実験時の条件に手動で合わせる） |
 
 その他: Playback Speed（0.1〜4倍速）、Loop（繰り返し再生）を Inspector で設定できる。
 環境密度は CSV に記録されていないため、実験時の条件に合わせて手動で切り替えること。
+
+> **Reswitch について**: 実験時の source 列に沿った切替を再現するのではなく、指定した周波数で
+> 改めてライブ⇔収録を切り替える（4ストローク ON 時はその周波数を変調周波数として合成する）。
+> 「別の切替周波数だったら／4ストロークを足したらどう見えるか」を、同じ収録データで後から検討できる。
+> なお切替・合成の位相は実時間（Time.deltaTime）で進むため、一時停止中も点滅は続く
+> （静止フレーム上で4ストロークの見えを確認できる。表示を固定したいときは LiveOnly / PlayedOnly にする）。
 
 ## データ形式
 
@@ -159,7 +174,7 @@ errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
 | `ViewSwitcher.cs` | CenterRawImage の texture を Live ⇔ Playback で交互切替（デューティ比50%の矩形波） |
 | `FollowingLogger.cs` | 実験走: ライブ頭部位置と収録位置・表示ソースを 50Hz で記録し CSV 保存 |
 | `EnvironmentSwitcher.cs` | 環境オブジェクト密度の切替（1/2/3 キー） |
-| `ReplayPlayer.cs` | 再生確認: 保存済みCSVの視点を通常カメラで再現（再生確認シーンで使用、HMD不要） |
+| `ReplayPlayer.cs` | 再生確認: 保存済みCSVからライブ/収録姿勢を2台のカメラで再レンダリングし、`ViewSwitcher`で再合成（周波数変更・4ストロークの後付け可、HMD不要） |
 | `FollowingPaths.cs` | データ保存先パスの一元管理（エディタ/実機の分岐） |
 | `FourStroke/FourStrokeCompositor.cs` | 4ストローク合成の共有コア（詳細は [08_fourstroke.md](08_fourstroke.md)） |
 | `FourStroke/DelayedFrameBuffer.cs` | ライブ映像のリングバッファ（4ストローク歩行シーン用の過去映像） |

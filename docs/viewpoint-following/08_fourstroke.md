@@ -115,9 +115,23 @@ D→C 間の実運動方向への動きが途切れなく続いて知覚され�
 | 極性 | Enhance | `FourStrokeCompositor.polarity` |
 | グレースケール化 | ON | `FourStrokeCompositor.grayscale` |
 
+## 5. 使い方③ — 再生確認シーンでの後付け 4ストローク
+
+`ViewpointFollowingReplay.unity`（[07](07_viewpoint-following-experiment.md#再生確認シーンviewpointfollowingreplayunity)）では、
+保存済みの `following_results_*.csv` を **収録後に**別条件で見直せる。ライブ姿勢と収録姿勢を
+2台のカメラで同時に再レンダリングし、同じ `ViewSwitcher` / `FourStrokeCompositor` で再合成するため、
+実験時に 4ストロークを掛けていなくても後から追加できる。
+
+- **M キー**で表示モードを **Reswitch** にする（C=ライブ再現映像、D=収録再現映像）
+- **4 キー**で 4ストローク ON/OFF、**V キー**で極性、**↑/↓**で変調周波数（=切替周波数、±0.5Hz）
+- HMD もデータ保存もなく、映像の見えだけを検討する用途（軌跡データは元 CSV のまま不変）
+
+> 再生の一時停止は `playing` フラグで行い `timeScale` は変えないため、停止中も切替・合成は
+> 実時間で進み続ける（静止フレーム上で4ストロークの見えを確認できる）。
+
 ---
 
-## 5. 実装メモ
+## 6. 実装メモ
 
 - 合成は `Graphics.Blit`（GPU 1パス）なので CPU 負荷はほぼゼロ。出力 RT と
   リングバッファ（`delayFrames+1` 枚のみ確保）はコンポーネント破棄時に解放される。

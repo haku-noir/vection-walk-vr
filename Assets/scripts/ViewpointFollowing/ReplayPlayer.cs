@@ -2,19 +2,31 @@
 using System.Globalization;
 using System.IO;
 using UnityEngine;
+using UnityEngine.UI;
 
 /// <summary>
-/// 実験で保存した CSV を読み込み，そのとき HMD に表示していた映像を
-/// 通常のカメラ（Game ビュー）で再現するクラス．HMD の接続は不要．
+/// 実験で保存した CSV を読み込み，そのとき記録された視点を通常のカメラ（Game ビュー）で
+/// 再現するクラス．HMD の接続は不要．
+///
+/// 従来は「実際に表示されていた映像」を再現するだけだったが，
+/// ライブ姿勢と収録姿勢の両方を2台のカメラで同時に再レンダリングするようにしたため，
+/// <b>収録後にパラメータを変えて表示を作り直せる</b>:
+/// - 切替周波数の変更（実験時と違う周波数で再度ライブ⇔収録を切り替える）
+/// - 4ストローク合成の追加（実験時と同じ FourStrokeCompositor をそのまま流用）
 ///
 /// 対応ファイル（ファイル名の先頭で自動判別）:
-/// - trajectory_*.csv        : 収録走の頭部視点をそのまま再生
-/// - following_results_*.csv : 実験走の記録を再生（表示モードを選択可能）
+/// - trajectory_*.csv        : 収録走の頭部視点をそのまま再生（ライブのみ）
+/// - following_results_*.csv : 実験走の記録を再生（下記の表示モードを選択可能）
 ///
 /// 操作方法（キーボード）:
 /// - Space : 再生 / 一時停止
 /// - R     : 最初から再生し直す
 /// - ← / → : 5秒 巻き戻し / 早送り
+/// - M     : 表示モード切替（AsExperienced → LiveOnly → PlayedOnly → Reswitch）
+/// - ↑ / ↓ : 切替周波数 ±0.5Hz（Reswitch で有効）
+/// - 4     : 4ストローク合成の ON/OFF（Reswitch で有効）
+/// - V     : 4ストロークの極性切替（Enhance → Reversal → Zero）
+/// - 1/2/3 : 環境密度（EnvironmentSwitcher）
 /// </summary>
 public class ReplayPlayer : MonoBehaviour
 {
@@ -29,14 +41,37 @@ public class ReplayPlayer : MonoBehaviour
         LiveOnly,
         /// <summary>提示された収録映像側（ゴーストカメラ）の視点のみを表示する</summary>
         PlayedOnly,
+        /// <summary>収録後にパラメータを変えて再合成する（切替周波数の変更・4ストロークの追加）</summary>
+        Reswitch,
     }
 
-    /// <summary>
-    /// 再生映像を映すカメラ（Game ビューに表示される）
-    /// </summary>
-    [Tooltip("再生映像を映すカメラ")]
-    public Camera replayCamera;
+    [Header("再生カメラ（シーンビルダーが自動設定）")]
+    /// <summary>ライブ姿勢（被験者の頭部）を再現し，ライブ映像テクスチャへ描画するカメラ</summary>
+    [Tooltip("ライブ姿勢を再現するカメラ（→ ライブ映像テクスチャ）")]
+    public Camera liveCamera;
 
+    /// <summary>収録姿勢（提示された収録映像側）を再現し，収録映像テクスチャへ描画するカメラ</summary>
+    [Tooltip("収録姿勢を再現するカメラ（→ 収録映像テクスチャ）")]
+    public Camera ghostCamera;
+
+    [Header("映像出力（シーンビルダーが自動設定）")]
+    /// <summary>合成・切替を担う ViewSwitcher（実験シーンと同じものを流用）</summary>
+    [Tooltip("表示の切替・4ストローク合成を担う ViewSwitcher")]
+    public ViewSwitcher viewSwitcher;
+
+    /// <summary>視野として表示している UI（RawImage）</summary>
+    [Tooltip("視野として表示しているUI（RawImage）")]
+    public RawImage rawImage;
+
+    /// <summary>ライブ映像テクスチャ（liveCamera のターゲット）</summary>
+    [Tooltip("ライブ映像テクスチャ（liveCamera のターゲット）")]
+    public Texture liveTexture;
+
+    /// <summary>収録映像テクスチャ（ghostCamera のターゲット）</summary>
+    [Tooltip("収録映像テクスチャ（ghostCamera のターゲット）")]
+    public Texture playbackTexture;
+
+    [Header("再生設定")]
     /// <summary>
     /// 読み込む CSV ファイル名（空欄なら保存先フォルダ内で最も新しい
     /// trajectory_*.csv / following_results_*.csv を自動選択）
@@ -71,6 +106,7 @@ public class ReplayPlayer : MonoBehaviour
     private float replayTime;
     private int index;
     private bool playing;
+    private DisplayMode lastDisplayMode;
 
     private bool IsLoaded { get { return times.Count >= 2; } }
     private float Duration { get { return IsLoaded ? times[times.Count - 1] : 0f; } }
@@ -82,29 +118,145 @@ public class ReplayPlayer : MonoBehaviour
 
     private void Update()
     {
-        // ---- キー操作 ----
+        // ---- 再生キー ----
         if (Input.GetKeyDown(KeyCode.Space)) playing = !playing;
         if (Input.GetKeyDown(KeyCode.R)) { replayTime = 0f; index = 0; playing = true; }
         if (Input.GetKeyDown(KeyCode.LeftArrow)) Seek(replayTime - 5f);
         if (Input.GetKeyDown(KeyCode.RightArrow)) Seek(replayTime + 5f);
 
-        if (!IsLoaded || !playing) return;
+        // ---- 表示パラメータのキー（following のみ有効） ----
+        HandleDisplayKeys();
 
-        replayTime += Time.deltaTime * playbackSpeed;
-        if (replayTime >= Duration)
+        if (!IsLoaded) return;
+
+        // Inspector から displayMode を変えられた場合も追随する
+        if (displayMode != lastDisplayMode)
         {
-            if (loop)
-            {
-                replayTime = 0f;
-                index = 0;
-            }
-            else
-            {
-                replayTime = Duration;
-                playing = false;
-            }
+            lastDisplayMode = displayMode;
+            ConfigureDisplay();
         }
-        ApplyPose();
+
+        if (playing)
+        {
+            replayTime += Time.deltaTime * playbackSpeed;
+            if (replayTime >= Duration)
+            {
+                if (loop)
+                {
+                    replayTime = 0f;
+                    index = 0;
+                }
+                else
+                {
+                    replayTime = Duration;
+                    playing = false;
+                }
+            }
+            ApplyPose();
+        }
+
+        // カメラ姿勢に依らず表示テクスチャは毎フレーム反映する
+        // （AsExperienced は source 列に沿ってライブ/収録が切り替わるため）
+        ApplyDisplay();
+    }
+
+    /// <summary>
+    /// 表示モード・切替周波数・4ストロークの調整キーを処理する（following 再生時のみ）
+    /// </summary>
+    private void HandleDisplayKeys()
+    {
+        if (!isFollowingFile) return;
+
+        // 表示モード巡回（M）
+        if (Input.GetKeyDown(KeyCode.M))
+        {
+            displayMode = NextDisplayMode(displayMode);
+            lastDisplayMode = displayMode;
+            ConfigureDisplay();
+            Debug.Log("[ReplayPlayer] 表示モード: " + displayMode);
+        }
+
+        if (viewSwitcher == null) return;
+
+        // 切替周波数 ±0.5Hz（↑/↓。Reswitch で反映される）
+        if (Input.GetKeyDown(KeyCode.UpArrow))
+            viewSwitcher.switchFrequency = Mathf.Clamp(viewSwitcher.switchFrequency + 0.5f, 0.1f, 10f);
+        if (Input.GetKeyDown(KeyCode.DownArrow))
+            viewSwitcher.switchFrequency = Mathf.Clamp(viewSwitcher.switchFrequency - 0.5f, 0.1f, 10f);
+
+        // 4ストローク合成 ON/OFF（4。Reswitch で反映される）
+        if (Input.GetKeyDown(KeyCode.Alpha4) || Input.GetKeyDown(KeyCode.Keypad4))
+        {
+            viewSwitcher.fourStrokeEnabled = !viewSwitcher.fourStrokeEnabled;
+            Debug.Log("[ReplayPlayer] 4ストローク: " + (viewSwitcher.fourStrokeEnabled ? "ON" : "OFF"));
+        }
+
+        // 4ストロークの極性巡回（V: Enhance → Reversal → Zero）
+        if (viewSwitcher.fourStroke != null && Input.GetKeyDown(KeyCode.V))
+        {
+            viewSwitcher.fourStroke.polarity = NextPolarity(viewSwitcher.fourStroke.polarity);
+            Debug.Log("[ReplayPlayer] 4ストローク極性: " + viewSwitcher.fourStroke.polarity);
+        }
+    }
+
+    /// <summary>表示モードの巡回順</summary>
+    private static DisplayMode NextDisplayMode(DisplayMode m)
+    {
+        switch (m)
+        {
+            case DisplayMode.AsExperienced: return DisplayMode.LiveOnly;
+            case DisplayMode.LiveOnly: return DisplayMode.PlayedOnly;
+            case DisplayMode.PlayedOnly: return DisplayMode.Reswitch;
+            default: return DisplayMode.AsExperienced;
+        }
+    }
+
+    /// <summary>極性の巡回順（実験シーンと同じ Enhance → Reversal → Zero）</summary>
+    private static FourStrokeCompositor.Polarity NextPolarity(FourStrokeCompositor.Polarity p)
+    {
+        switch (p)
+        {
+            case FourStrokeCompositor.Polarity.Enhance: return FourStrokeCompositor.Polarity.Reversal;
+            case FourStrokeCompositor.Polarity.Reversal: return FourStrokeCompositor.Polarity.Zero;
+            default: return FourStrokeCompositor.Polarity.Enhance;
+        }
+    }
+
+    /// <summary>
+    /// 表示モードに応じて ViewSwitcher の有効・モードを設定する
+    /// （AsExperienced と trajectory は ReplayPlayer 自身がテクスチャを差し替える）
+    /// </summary>
+    private void ConfigureDisplay()
+    {
+        // 収録映像側カメラは following のときだけ動かす（trajectory では収録姿勢が無い）
+        if (ghostCamera != null) ghostCamera.gameObject.SetActive(isFollowingFile);
+
+        if (!isFollowingFile) { DisableSwitcher(); return; }
+
+        switch (displayMode)
+        {
+            case DisplayMode.AsExperienced: DisableSwitcher(); break;
+            case DisplayMode.LiveOnly: EnableSwitcher(ViewSwitcher.SourceMode.LiveOnly); break;
+            case DisplayMode.PlayedOnly: EnableSwitcher(ViewSwitcher.SourceMode.PlaybackOnly); break;
+            case DisplayMode.Reswitch: EnableSwitcher(ViewSwitcher.SourceMode.Alternate); break;
+        }
+    }
+
+    /// <summary>ViewSwitcher に表示を委ねる（切替・4ストロークは ViewSwitcher が担当）</summary>
+    private void EnableSwitcher(ViewSwitcher.SourceMode mode)
+    {
+        if (viewSwitcher == null) { if (rawImage != null) rawImage.texture = liveTexture; return; }
+        viewSwitcher.enabled = true;
+        viewSwitcher.mode = mode;
+        viewSwitcher.ResetPhase(); // 再有効化時にもテクスチャを確実に適用する
+    }
+
+    /// <summary>ViewSwitcher を止め，ReplayPlayer 自身がテクスチャを差し替える</summary>
+    private void DisableSwitcher()
+    {
+        if (viewSwitcher == null) return;
+        viewSwitcher.enabled = false;
+        if (viewSwitcher.fourStroke != null) viewSwitcher.fourStroke.enabled = false; // 無駄な合成を止める
     }
 
     /// <summary>
@@ -118,7 +270,9 @@ public class ReplayPlayer : MonoBehaviour
     }
 
     /// <summary>
-    /// 現在の再生時刻に対応する姿勢を補間してカメラに適用する
+    /// 現在の再生時刻に対応する姿勢を補間して各カメラに適用する．
+    /// following ではライブ姿勢を liveCamera，収録姿勢を ghostCamera の両方へ同時に適用し，
+    /// どちらを表示するか（合成するか）は表示側（ViewSwitcher / ApplyDisplay）で決める．
     /// </summary>
     private void ApplyPose()
     {
@@ -130,28 +284,49 @@ public class ReplayPlayer : MonoBehaviour
         float segment = times[next] - times[index];
         float t = segment > 0f ? Mathf.Clamp01((replayTime - times[index]) / segment) : 0f;
 
-        // 表示すべき視点（ライブ/収録）を決める
-        bool useRec = false;
-        if (isFollowingFile)
+        if (liveCamera != null)
         {
-            switch (displayMode)
-            {
-                case DisplayMode.AsExperienced: useRec = sources[index] == 1; break;
-                case DisplayMode.LiveOnly: useRec = false; break;
-                case DisplayMode.PlayedOnly: useRec = true; break;
-            }
+            liveCamera.transform.SetPositionAndRotation(
+                Vector3.Lerp(livePositions[index], livePositions[next], t),
+                Quaternion.Slerp(liveRotations[index], liveRotations[next], t));
         }
 
-        List<Vector3> pos = useRec ? recPositions : livePositions;
-        List<Quaternion> rot = useRec ? recRotations : liveRotations;
-
-        if (replayCamera != null)
+        if (isFollowingFile && ghostCamera != null)
         {
-            replayCamera.transform.SetPositionAndRotation(
-                Vector3.Lerp(pos[index], pos[next], t),
-                Quaternion.Slerp(rot[index], rot[next], t));
+            ghostCamera.transform.SetPositionAndRotation(
+                Vector3.Lerp(recPositions[index], recPositions[next], t),
+                Quaternion.Slerp(recRotations[index], recRotations[next], t));
         }
-        CurrentSourceIsRec = useRec;
+    }
+
+    /// <summary>
+    /// 現在のモードに応じて RawImage に映すテクスチャを決める．
+    /// ViewSwitcher が担当するモード（LiveOnly/PlayedOnly/Reswitch）では表示ソースの読み取りのみ行う．
+    /// </summary>
+    private void ApplyDisplay()
+    {
+        if (rawImage == null) return;
+
+        if (!isFollowingFile)
+        {
+            rawImage.texture = liveTexture;
+            rawImage.color = Color.white;
+            CurrentSourceIsRec = false;
+            return;
+        }
+
+        if (displayMode == DisplayMode.AsExperienced)
+        {
+            bool useRec = index < sources.Count && sources[index] == 1;
+            rawImage.texture = useRec ? playbackTexture : liveTexture;
+            rawImage.color = Color.white;
+            CurrentSourceIsRec = useRec;
+        }
+        else
+        {
+            // ViewSwitcher が rawImage.texture を管理する．バナー表示用にソースだけ読み取る
+            CurrentSourceIsRec = viewSwitcher != null && viewSwitcher.CurrentSource == 1;
+        }
     }
 
     /// <summary>今表示している視点が収録側か（HUD表示用）</summary>
@@ -224,7 +399,10 @@ public class ReplayPlayer : MonoBehaviour
         replayTime = 0f;
         index = 0;
         playing = true;
+        lastDisplayMode = displayMode;
+        ConfigureDisplay(); // ファイル種別に応じて表示経路を初期化する
         ApplyPose();
+        ApplyDisplay();
         Debug.Log("[ReplayPlayer] 読み込み完了: " + loadedFileName
             + " (" + (isFollowingFile ? "following" : "trajectory") + ", "
             + times.Count + "サンプル, " + Duration.ToString("F1") + "s)");
@@ -275,20 +453,22 @@ public class ReplayPlayer : MonoBehaviour
         // 表示中の視点をバナーで示す（収録=オレンジ / ライブ=青）
         string sourceLabel;
         Color bannerColor;
+        Color live = new Color(0.16f, 0.47f, 0.84f, 0.85f);
+        Color rec = new Color(0.92f, 0.41f, 0.20f, 0.85f);
         if (!isFollowingFile)
         {
             sourceLabel = "収録走の再生: " + loadedFileName;
-            bannerColor = new Color(0.16f, 0.47f, 0.84f, 0.85f);
+            bannerColor = live;
         }
         else if (CurrentSourceIsRec)
         {
             sourceLabel = "収録映像（提示側） | " + displayMode + " | " + loadedFileName;
-            bannerColor = new Color(0.92f, 0.41f, 0.20f, 0.85f);
+            bannerColor = rec;
         }
         else
         {
             sourceLabel = "ライブ（被験者の移動） | " + displayMode + " | " + loadedFileName;
-            bannerColor = new Color(0.16f, 0.47f, 0.84f, 0.85f);
+            bannerColor = live;
         }
 
         Color prev = GUI.color;
@@ -301,6 +481,22 @@ public class ReplayPlayer : MonoBehaviour
         GUI.Label(new Rect(10, 32, 800, 20),
             (playing ? "再生中" : "一時停止") + "  " + replayTime.ToString("F1") + " / " + Duration.ToString("F1") + " s"
             + "   速度 x" + playbackSpeed.ToString("F1"));
-        GUI.Label(new Rect(10, 52, 800, 20), "Space: 再生/停止   R: 最初から   ←/→: ±5秒   1/2/3: 環境密度");
+
+        // following はパラメータ操作の状態を表示する
+        if (isFollowingFile && viewSwitcher != null)
+        {
+            string fs = viewSwitcher.fourStrokeEnabled
+                ? "ON (" + (viewSwitcher.fourStroke != null ? viewSwitcher.fourStroke.polarity.ToString() : "?") + ")"
+                : "OFF";
+            GUI.Label(new Rect(10, 52, 800, 20),
+                "モード: " + displayMode + "   切替周波数: " + viewSwitcher.switchFrequency.ToString("F1") + " Hz"
+                + "   4ストローク: " + fs + (displayMode == DisplayMode.Reswitch ? "" : "（Reswitchで反映）"));
+            GUI.Label(new Rect(10, 72, 900, 20),
+                "Space:再生/停止  R:最初から  ←/→:±5秒  M:表示モード  ↑↓:周波数  4:4ストローク  V:極性  1/2/3:環境密度");
+        }
+        else
+        {
+            GUI.Label(new Rect(10, 52, 800, 20), "Space: 再生/停止   R: 最初から   ←/→: ±5秒   1/2/3: 環境密度");
+        }
     }
 }
