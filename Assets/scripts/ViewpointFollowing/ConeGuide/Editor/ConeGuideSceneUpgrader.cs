@@ -442,6 +442,31 @@ public static class ConeGuideSceneUpgrader
                 + "（ReplayPlayer > Cone Guide Enabled をオンにし、表示モードを Reswitch にすると有効）");
         }
 
+        // 実験シーンでは FollowingExperimentManager が K キーで合成器を制御する
+        foreach (FollowingExperimentManager mgr in CollectComponents<FollowingExperimentManager>(scene))
+        {
+            Undo.RecordObject(mgr, "Wire ChannelCompositor");
+            mgr.channelCompositor = compositor;
+            EditorUtility.SetDirty(mgr);
+            Debug.Log("[ConeGuideSceneUpgrader] FollowingExperimentManager に ChannelCompositor を"
+                + "配線しました（停止中に K キーで錐ガイドの ON/OFF）");
+        }
+
+        // ロガーは表示ソースと箱条件を合成器から、初期オフセット量を管理クラスから取る
+        foreach (FollowingLogger logger in CollectComponents<FollowingLogger>(scene))
+        {
+            Undo.RecordObject(logger, "Wire ChannelCompositor");
+            logger.compositor = compositor;
+            if (logger.manager == null)
+            {
+                List<FollowingExperimentManager> mgrs = CollectComponents<FollowingExperimentManager>(scene);
+                if (mgrs.Count > 0) logger.manager = mgrs[0];
+            }
+            EditorUtility.SetDirty(logger);
+            Debug.Log("[ConeGuideSceneUpgrader] FollowingLogger に ChannelCompositor と"
+                + " FollowingExperimentManager を配線しました");
+        }
+
         Debug.Log("[ConeGuideSceneUpgrader] ChannelCompositor を " + host.name
             + (created ? " に追加しました（既定は無効）" : " で更新しました"));
         return "ChannelCompositor: " + host.name + (created ? " に追加（既定は無効）" : " を更新");

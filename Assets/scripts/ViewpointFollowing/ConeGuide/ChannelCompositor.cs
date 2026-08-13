@@ -248,6 +248,10 @@ public class ChannelCompositor : MonoBehaviour
         boxPhase.Reset(WaveformOf(boxMode));
         CurrentSource = (bgMode == BackgroundMode.GhostFixed) ? 1 : 0;
         BoxDominantSource = (boxMode == BoxMode.SelfFixed) ? 1 : 0;
+
+        // 箱の姿勢フィルタ（LPF）も揃えてリセットし，開始直後の過渡応答を出さない
+        if (coneOther != null) coneOther.ResetPose();
+        if (coneSelf != null) coneSelf.ResetPose();
     }
 
     private void LateUpdate()

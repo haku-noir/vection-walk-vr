@@ -27,6 +27,8 @@ using UnityEngine.UI;
 /// - 4     : 4ストローク合成の ON/OFF（Reswitch で有効）
 /// - V     : 4ストロークの極性切替（Enhance → Reversal → Zero）
 /// - 1/2/3 : 環境密度（EnvironmentSwitcher）
+/// - K     : 四角錐ガイドの ON/OFF（Reswitch で反映）
+/// - G / C / B : 背景チャンネル / 箱チャンネル / 箱の4ストローク極性 の巡回
 /// </summary>
 public class ReplayPlayer : MonoBehaviour
 {
@@ -214,6 +216,50 @@ public class ReplayPlayer : MonoBehaviour
         {
             viewSwitcher.fourStroke.polarity = NextPolarity(viewSwitcher.fourStroke.polarity);
             Debug.Log("[ReplayPlayer] 4ストローク極性: " + viewSwitcher.fourStroke.polarity);
+        }
+
+        HandleConeGuideKeys();
+    }
+
+    /// <summary>
+    /// 錐ガイド（09 仕様）の条件切替キーを処理する．実験シーンと同じ割り当てにしてある．
+    /// - K : 錐ガイドの ON/OFF（Reswitch モードで反映される）
+    /// - G : 背景チャンネル巡回　/　C : 箱チャンネル巡回　/　B : 箱の4ストローク極性巡回
+    ///
+    /// f_bg は既存の ↑/↓（switchFrequency）を共用し，←/→ は既存のシーク操作のままにする
+    /// （f_box は Sync Box Freq To Bg か Inspector で設定する）．
+    /// </summary>
+    private void HandleConeGuideKeys()
+    {
+        if (channelCompositor == null) return;
+
+        if (Input.GetKeyDown(KeyCode.K))
+        {
+            coneGuideEnabled = !coneGuideEnabled;
+            Debug.Log("[ReplayPlayer] 錐ガイド: " + (coneGuideEnabled ? "ON" : "OFF")
+                + (displayMode == DisplayMode.Reswitch ? "" : "（Reswitch モードで反映されます）"));
+        }
+
+        if (!channelCompositor.enabled) return;
+
+        if (Input.GetKeyDown(KeyCode.G))
+        {
+            channelCompositor.bgMode = (ChannelCompositor.BackgroundMode)
+                (((int)channelCompositor.bgMode + 1) % 4);
+            Debug.Log("[ReplayPlayer] 背景チャンネル: " + channelCompositor.bgMode);
+        }
+
+        if (Input.GetKeyDown(KeyCode.C))
+        {
+            channelCompositor.boxMode = (ChannelCompositor.BoxMode)
+                (((int)channelCompositor.boxMode + 1) % 5);
+            Debug.Log("[ReplayPlayer] 箱チャンネル: " + channelCompositor.boxMode);
+        }
+
+        if (Input.GetKeyDown(KeyCode.B))
+        {
+            channelCompositor.boxPolarity = NextPolarity(channelCompositor.boxPolarity);
+            Debug.Log("[ReplayPlayer] 箱の4ストローク極性: " + channelCompositor.boxPolarity);
         }
     }
 

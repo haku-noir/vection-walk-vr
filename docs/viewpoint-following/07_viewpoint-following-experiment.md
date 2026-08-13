@@ -43,6 +43,21 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 | V（停止中） | — | 4ストロークの極性切替（Enhance → Reversal → Zero） |
 | 1 / 2 / 3 | — | 環境密度切替（高密度 / 低密度 / なし） |
 
+四角錐ガイド（[09_cone-guide-spec.md](09_cone-guide-spec.md)）を使う場合の操作。**すべて停止中のみ有効**:
+
+| キーボード | 動作 |
+|---|---|
+| K | **錐ガイド経路の ON/OFF**（オフの間は上記の従来動作と完全に同じ） |
+| G | 背景チャンネル巡回（Live固定 → Ghost固定 → 矩形波交替 → 4ストローク） |
+| C | 箱チャンネル巡回（Off → Other固定 → Self固定 → 矩形波交替 → 4ストローク） |
+| B | 箱の4ストローク極性切替（Enhance → Reversal → Zero） |
+| ↑ / ↓ | f_bg（背景の切替周波数）±0.5Hz |
+| ← / → | f_box（箱の切替周波数）±0.5Hz（同期がオンなら自動的に解除される） |
+
+錐ガイドが有効なとき、`4` キーは背景チャンネルの「矩形波交替 ⇔ 4ストローク」、
+`V` キーは**背景の**4ストローク極性を切り替える（キーの意味は従来と同じ。箱の極性は `B`）。
+錐ガイドは **Follow モードでのみ**有効になる（収録走では素のライブ映像を提示する）。
+
 停止は常に `O` / B ボタン。`P` で開始した試行は停止と同時に CSV が保存されるので、
 本番は `P` で開始するだけでよい（`O` 開始なら何度試してもファイルは増えない）。
 
@@ -94,6 +109,41 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 同じ trajectory ファイルのまま、周波数・環境密度を変えて 4〜5 を繰り返す。
 **同一軌跡・別条件の比較ができるのがこの設計（軌跡収録＋再レンダリング方式）の利点**。
 
+## 四角錐ガイド（09 仕様）のセットアップ
+
+視点位置を頂点とする四角錐（断面矩形2枚のワイヤフレーム）を、視点一致のガイドとして
+提示する機能。設計の背景は [09_cone-guide-spec.md](09_cone-guide-spec.md) を参照。
+
+**初回のみ**: 対象のシーン（`ViewpointFollowing.unity` / `ViewpointFollowingReplay.unity`）を開き、
+メニュー **Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加** を実行する。
+
+このメニューは**既存シーンを作り直さず、足りない要素だけを差分で足す**（何度実行してもよい）。
+実行後、シーンは未保存状態になるので内容を確認して手動保存すること。追加されるもの:
+
+- レイヤ `ConeOther`(16) / `ConeSelf`(17) の登録と、既存カメラの Culling Mask からの除外
+- `Cone_Other` / `Cone_Self`（各 `ConeGuide` + `ConePoseFilter`）
+- 箱用 RenderTexture（`BoxOther` / `BoxSelf`。アルファ付き・深度付き）と `LiveBoxCam` / `GhostBoxCam`
+- `ChannelCompositor`（`ViewSwitcher` と同じオブジェクトに追加。**既定は無効**）
+
+主なパラメータ（既定値は 09 §3.1 / §3.2 のとおり）:
+
+| 場所 | パラメータ | 既定 |
+|---|---|---|
+| `Cone_*` > ConeGuide | d₁ / d₂ / 開き半角 α / 断面枚数 N | 1.0m / 3.0m / 15° / 2 |
+| 〃 | 線幅（**角度指定**） / 線の色 / 稜線描画 / 別色モード | 0.3° / 白 / ON / OFF |
+| `Cone_*` > ConePoseFilter | ヨー / ピッチ / ロール | Raw / LowPass 0.5Hz / Zero |
+| ExperimentRig > ChannelCompositor | 背景チャンネル / 箱チャンネル | 矩形波交替 / Off |
+| 〃 | f_box の f_bg 同期 / 輝度変調量 Δ | ON / 0.35 |
+| ExperimentRig > FollowingExperimentManager | 初期オフセット（横 / 前後 / ヨー） | 0m / 0m / 0° |
+
+> **初期オフセット**は `Align To Recording On Start`（開始地点合わせ）の**後**に適用される。
+> 整合をオフにした試行では適用されない（CSV の offset* 列も 0 になる）。
+> 座標系は誤差の成分分解と同じコース基準（+Z = 進行方向、+X = 進行方向に対して右）。
+
+> **別色モードと箱の4ストロークは排他**。この組合せを選ぶと別色モードが自動的に無効化され、
+> 警告ログと HUD 表示が出る（箱の4ストロークは輝度変調方式のため。奥行き手がかりは
+> 稜線オクルージョンが担うので単色でも前後の多義性は解消される）。
+
 ## 再生確認シーン（ViewpointFollowingReplay.unity）
 
 実験後に記録した視点を Game ビューで見直すためのシーン。**HMD 不要**。
@@ -127,6 +177,12 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 | 4 | 4ストローク合成 ON/OFF（**Reswitch** で反映） → [08](08_fourstroke.md) |
 | V | 4ストロークの極性切替（Enhance → Reversal → Zero） |
 | 1 / 2 / 3 | 環境密度切替（実験時の条件に手動で合わせる） |
+| K | 四角錐ガイド ON/OFF（**Reswitch** で反映） → [09](09_cone-guide-spec.md) |
+| G / C / B | 背景チャンネル / 箱チャンネル / 箱の4ストローク極性 の巡回 |
+
+錐ガイドも **Reswitch モードでのみ**有効になる（「収録後にパラメータを変えて再合成する」
+用途のため）。f_bg は `↑`/`↓` を共用し、f_box は `ChannelCompositor` の同期設定か
+Inspector で指定する（`←`/`→` は既存のシーク操作のまま）。
 
 その他: Playback Speed（0.1〜4倍速）、Loop（繰り返し再生）を Inspector で設定できる。
 環境密度は CSV に記録されていないため、実験時の条件に合わせて手動で切り替えること。
@@ -156,11 +212,29 @@ time, source, freq,
 livePosX/Y/Z, liveRotX/Y/Z,     ← ライブの頭部位置・回転
 recPosX/Y/Z,  recRotX/Y/Z,      ← その瞬間に実際に提示された映像カメラの位置・回転
                                   （再生成分の条件による置き換え後の値）
-errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
+errXZ, err3D,                    ← 追従誤差（水平面 / 3次元）
+boxMode, fBox, boxPolarity,      ← 箱チャンネルの条件（錐ガイド。未使用なら Off / 0 / -）
+offsetLat, offsetFwd, offsetYaw, ← 実際に適用された初期オフセット量
+errLat, errFwd, errYaw           ← 誤差の成分分解（コース進行方向 +Z 基準、符号つき）
 ```
-- source: その瞬間に表示していた映像（0 = ライブ, 1 = 収録）
-- freq: 切替周波数[Hz]（ファイル名にも入る）
+- source: その瞬間に表示していた映像（0 = ライブ, 1 = 収録）。錐ガイド使用時は**背景チャンネル基準**
+- freq: 切替周波数[Hz]（= f_bg。ファイル名にも入る）
 - errXZ が歩行追従度の主指標。時間方向のずれの解析（ラグ相関・DTW）は生の pos 列から行う
+- errLat = ライブ−収録の X 成分（横）、errFwd = 同 Z 成分（前後）、
+  errYaw = 収録に対するライブのヨー角差（−180°〜180°）。
+  **前後多義性が効いているなら errFwd にだけ大きな誤差または符号反転が残るはず**（09 §6）
+- **既存17列（time〜err3D）の順序と意味は変えていない**。新規列は末尾に追加してあるので、
+  既存の解析スクリプトと再生確認シーンはそのまま動く（いずれも列名でアクセスしている）
+
+ファイル名の条件タグ（該当する条件のときだけ付く。錐ガイド未使用なら従来と同じ名前）:
+
+| タグ | 条件 |
+|---|---|
+| `_boxOther` / `_boxSelf` / `_boxBoth` | 箱チャンネル = Other固定 / Self固定 / 矩形波交替 |
+| `_boxBoth4stEnhance` など | 箱チャンネル = 4ストローク（極性つき） |
+| `_4stEnhance` など | 背景チャンネル = 4ストローク（極性つき。従来からの規則） |
+
+例: `following_results_5.0Hz_PositionAndRotation_boxBoth_4stEnhance_20260813_130000.csv`
 
 ## 実装構成
 
@@ -180,6 +254,13 @@ errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
 | `FourStroke/DelayedFrameBuffer.cs` | ライブ映像のリングバッファ（4ストローク歩行シーン用の過去映像） |
 | `FourStroke/FourStrokeSelfManager.cs` | 4ストローク歩行シーンの進行管理 |
 | `Editor/ViewpointFollowingSceneBuilder.cs` | 実験シーンの自動構築（メニュー: Tools > 視点追従実験） |
+| `ConeGuide/ConeGuide.cs` | 四角錐ガイドの生成と追従（断面枠＋側稜を太さのある3Dジオメトリで描く） |
+| `ConeGuide/ConeLine.shader` | 錐の線（ZWrite On / ZTest LEqual で稜線オクルージョンを成立させる） |
+| `ConeGuide/ConePoseFilter.cs` | 箱の姿勢処理（ヨー/ピッチ/ロールを Raw / LowPass / Zero） |
+| `ConeGuide/ChannelPhase.cs` | 1チャンネル分の位相計算（矩形波 / 4ストローク）。背景用・箱用に独立適用 |
+| `ConeGuide/ChannelCompositor.cs` | 背景と箱の2チャンネル独立合成（4入力 → CenterRawImage） |
+| `ConeGuide/ChannelComposite.shader` | 上記の合成シェーダ（箱は輝度変調方式で重ねる） |
+| `ConeGuide/Editor/ConeGuideSceneUpgrader.cs` | 既存シーンへの錐ガイド追加（メニュー: Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加） |
 
 ### 映像パイプライン（02 の構成に GhostCamera 系統を追加）
 
@@ -189,6 +270,23 @@ errXZ, err3D                     ← 追従誤差（水平面 / 3次元）
 [収録系統]    GhostCamera ──────→ PlaybackEye RT ─┘
               ↑ TrajectoryPlayer が収録軌跡どおりに駆動
 ```
+
+錐ガイドを有効（`K` キー）にすると、4カメラ / 4RT の2チャンネル構成に切り替わる:
+
+```
+[背景ch] CenterEyeCapture ─→ CenterEye RT ────┐
+         GhostCamera ─────→ PlaybackEye RT ───┤
+                                              ├─(ChannelCompositor)─→ CenterRawImage → HMD
+[箱ch]   LiveBoxCam ───────→ BoxOther RT ─────┤   背景と箱を独立に選択・合成
+         GhostBoxCam ──────→ BoxSelf RT ──────┘
+```
+
+- `LiveBoxCam` / `GhostBoxCam` は各背景カメラの**子**（姿勢・投影が完全一致）。
+  Culling Mask はそれぞれ `ConeOther` / `ConeSelf` のみ、背景は透明クリア
+- `Cone_Other`（頂点＝収録視点）はライブ映像側にのみ、
+  `Cone_Self`（頂点＝ライブ頭部）は収録映像側にのみ映る
+- 箱は下地に対する**輝度変調**として重なる（`final = BG + boxMask × sign × Δ`）
+- **錐ガイドがオフの間は `ChannelCompositor` が無効化され、上の従来経路がそのまま動く**
 
 ### シーン構造（ViewpointFollowing.unity）
 
