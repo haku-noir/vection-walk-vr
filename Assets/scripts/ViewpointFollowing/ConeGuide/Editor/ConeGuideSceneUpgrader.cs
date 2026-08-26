@@ -135,6 +135,11 @@ public static class ConeGuideSceneUpgrader
         Camera liveBoxCam = EnsureBoxCamera(scene, LiveBoxCamName, liveBgCam, otherLayer, boxOtherRT);
         Camera ghostBoxCam = EnsureBoxCamera(scene, GhostBoxCamName, ghostBgCam, selfLayer, boxSelfRT);
 
+        // --- 5.5. Far At Infinity 用の Observer（この錐を実際に描画するカメラ）を配線する ---
+        // Cone_Other はライブ視野（LiveBoxCam）に，Cone_Self は収録視野（GhostBoxCam）に描かれる
+        WireObserver(coneOther, liveBoxCam.transform);
+        WireObserver(coneSelf, ghostBoxCam.transform);
+
         // --- 6. ChannelCompositor を用意して4入力を配線する（既定は無効） ---
         string compositorNote = EnsureCompositor(scene, coneOther, coneSelf,
             boxOtherRT, boxSelfRT, liveBoxCam, ghostBoxCam);
@@ -156,6 +161,8 @@ public static class ConeGuideSceneUpgrader
             "【使い方】ChannelCompositor のチェックを入れると2チャンネル合成経路に\n" +
             "切り替わります（オフの間は従来どおり ViewSwitcher が表示を担当）。\n" +
             "背景モード・箱モード・極性・周波数は Inspector で切り替えられます。\n\n" +
+            "【遠断面の無限遠モード】各 Cone の Inspector で Far At Infinity をONにすると，\n" +
+            "遠断面が並進誤差では動かなくなります（Observer は自動配線済み）。\n\n" +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -296,6 +303,19 @@ public static class ConeGuideSceneUpgrader
             + ", 姿勢処理: ヨー=" + filter.yawMode + " ピッチ=" + filter.pitchMode
             + " ロール=" + filter.rollMode + "）");
         return cone;
+    }
+
+    /// <summary>
+    /// 錐の Observer（この錐を実際に描画するカメラの Transform）を配線する．
+    /// Far At Infinity（未使用時は無視される）のために必要．冪等（同じなら何もしない）．
+    /// </summary>
+    private static void WireObserver(ConeGuide cone, Transform observer)
+    {
+        if (cone.observer == observer) return;
+        Undo.RecordObject(cone, "Wire " + cone.name + " observer");
+        cone.observer = observer;
+        EditorUtility.SetDirty(cone);
+        Debug.Log("[ConeGuideSceneUpgrader] " + cone.name + " の Observer を配線しました: " + observer.name);
     }
 
     /// <summary>

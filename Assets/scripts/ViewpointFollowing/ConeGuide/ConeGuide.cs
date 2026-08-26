@@ -46,6 +46,13 @@ public class ConeGuide : MonoBehaviour
     [Tooltip("錐の種別（Other=ライブ視野に描く / Self=収録視野に描く）")]
     public ConeKind kind = ConeKind.Other;
 
+    /// <summary>
+    /// この錐を実際に描画するカメラ（箱カメラ）の視点．<b>Far At Infinity</b> のときだけ使う．
+    /// Other なら LiveBoxCam，Self なら GhostBoxCam（ConeGuideSceneUpgrader が自動配線する）．
+    /// </summary>
+    [Tooltip("この錐を描画するカメラの視点（Other=LiveBoxCam / Self=GhostBoxCam）。Far At Infinity でのみ使用")]
+    public Transform observer;
+
     [Header("幾何（仕様 09 §3.1）")]
     /// <summary>近断面距離 d1[m]（既定 1.0m）</summary>
     [Tooltip("近断面距離 d1[m]（0.8m未満は輻輳・調節矛盾で不快）")]
@@ -54,6 +61,20 @@ public class ConeGuide : MonoBehaviour
     /// <summary>遠断面距離 d2[m]（既定 3.0m）</summary>
     [Tooltip("遠断面距離 d2[m]（前後感度 = (d2-d1)/(d1·d2)）")]
     [Range(1.5f, 6f)] public float farDistance = 3.0f;
+
+    [Header("遠断面の無限遠モード（拡張）")]
+    /// <summary>
+    /// 遠断面を実質無限遠として扱うか（既定 OFF）．
+    ///
+    /// ON にすると，遠断面（と側稜の遠い側の端）は頂点(<see cref="target"/>)ではなく
+    /// <see cref="observer"/>（この錐を実際に描画するカメラ）の<b>位置と向きの両方</b>を
+    /// 基準に再配置される．これにより，頂点と観測者の間の<b>並進誤差（横ズレ δ・前後ズレ D）</b>
+    /// だけでなく<b>回転誤差（ヨー等）</b>の影響も打ち消され，遠断面は画面上で
+    /// <b>完全に静止したリファレンス枠</b>になる（位置・サイズ・向きのいずれも変化しない）．
+    /// 誤差の手がかりは近断面だけが担う形になる．
+    /// </summary>
+    [Tooltip("遠断面を画面上に完全固定する（並進・回転どちらの誤差にも反応しない）。Observer の設定が必要")]
+    public bool farAtInfinity = false;
 
     /// <summary>開き半角 α[deg]（既定 15° = 見かけ直径30°）</summary>
     [Tooltip("開き半角 α[deg]（断面半幅 = d·tanα。既定15°=見かけ直径30°）")]
@@ -112,9 +133,9 @@ public class ConeGuide : MonoBehaviour
     /// 錐ごとに独立したコンポーネントなので取り違えやすく，それを防ぐための仕組み．
     /// </summary>
     /// <remarks>
-    /// 同期されるのは幾何・見た目（d1 / d2 / α / 断面枚数 / 線幅 / 線の色 / 稜線 / 別色モード）と，
+    /// 同期されるのは幾何・見た目（d1 / d2 / 遠断面無限遠モード / α / 断面枚数 / 線幅 / 線の色 / 稜線 / 別色モード）と，
     /// 姿勢処理の条件（ヨー・ピッチ・ロールの処理とカットオフ）．
-    /// 追従対象・種別・シェーダ・フィルタの内部状態は錐ごとの固有値なのでコピーしない．
+    /// 追従対象・種別・Observer・シェーダ・フィルタの内部状態は錐ごとの固有値なのでコピーしない．
     ///
     /// 「引く」側が同期元を参照する形にしてあるので，2つの錐の更新順に依存せず
     /// 同じフレームで値が揃う．
@@ -148,6 +169,8 @@ public class ConeGuide : MonoBehaviour
     private bool meshDirty = true;
     /// <summary>相互参照の警告を1回だけ出すためのフラグ</summary>
     private bool mirrorCycleWarned;
+    /// <summary>Far At Infinity が有効なのに Observer 未設定の警告を1回だけ出すためのフラグ</summary>
+    private bool observerMissingWarned;
 
     /// <summary>現在の断面距離（近い順）．HUD・デバッグ用</summary>
     public float NearDistance { get { return Mathf.Min(nearDistance, farDistance); } }
@@ -156,12 +179,18 @@ public class ConeGuide : MonoBehaviour
 
     /// <summary>
     /// 前後感度 |dr/dD|(D=0) = (d2−d1)/(d1·d2)（仕様 §1.3）．パラメータ設計の確認用．
+    /// Far At Infinity 有効時は d2→∞ の極限値 1/d1 を返す．
     /// </summary>
     public float DepthSensitivity
     {
         get
         {
-            float d1 = NearDistance, d2 = FarDistance;
+            float d1 = NearDistance;
+            if (farAtInfinity && observer != null)
+            {
+                return d1 > 0f ? 1f / d1 : 0f;
+            }
+            float d2 = FarDistance;
             return (d1 > 0f && d2 > 0f) ? (d2 - d1) / (d1 * d2) : 0f;
         }
     }
@@ -199,11 +228,26 @@ public class ConeGuide : MonoBehaviour
         // 同期元があれば先に値を引く（このあとの変更検知でメッシュも同じフレームで作り直される）
         SyncFromMirrorSource();
 
-        // 形状パラメータが変わっていたらメッシュを作り直す
-        GeometryKey key = GeometryKey.From(this);
-        if (meshDirty || !key.Equals(lastKey))
+        // 頂点＝対象視点の姿勢を先に確定する（Far At Infinity のメッシュ計算に必要なため）．
+        // 回転は姿勢処理（ヨー/ピッチ/ロール）を通す．poseFilter のチェックを外せば
+        // 素通し（＝追従対象の姿勢そのまま）になる
+        Vector3 apexPos = transform.position;
+        Quaternion apexRot = transform.rotation;
+        if (target != null)
         {
-            BuildMesh();
+            apexPos = target.position;
+            apexRot = (poseFilter != null && poseFilter.enabled)
+                ? poseFilter.Filter(target.rotation)
+                : target.rotation;
+        }
+
+        // 形状パラメータが変わっていたらメッシュを作り直す．
+        // Far At Infinity 中は Observer が毎フレーム動くため，その間は常に作り直す
+        GeometryKey key = GeometryKey.From(this);
+        bool infinityTracksObserver = farAtInfinity && observer != null;
+        if (meshDirty || !key.Equals(lastKey) || infinityTracksObserver)
+        {
+            BuildMesh(apexPos, apexRot);
             lastKey = key;
             meshDirty = false;
         }
@@ -211,14 +255,9 @@ public class ConeGuide : MonoBehaviour
         // レイヤは kind から決まる（Inspector で kind を変えても追随させる）
         ApplyLayer();
 
-        // 頂点＝対象視点に追従する．回転は姿勢処理（ヨー/ピッチ/ロール）を通す．
-        // poseFilter のチェックを外せば素通し（＝追従対象の姿勢そのまま）になる
         if (target != null)
         {
-            Quaternion rot = (poseFilter != null && poseFilter.enabled)
-                ? poseFilter.Filter(target.rotation)
-                : target.rotation;
-            transform.SetPositionAndRotation(target.position, rot);
+            transform.SetPositionAndRotation(apexPos, apexRot);
         }
     }
 
@@ -258,6 +297,7 @@ public class ConeGuide : MonoBehaviour
         {
             nearDistance = source.nearDistance;
             farDistance = source.farDistance;
+            farAtInfinity = source.farAtInfinity;
             halfAngleDeg = source.halfAngleDeg;
             sectionCount = source.sectionCount;
             lineWidthDeg = source.lineWidthDeg;
@@ -296,9 +336,40 @@ public class ConeGuide : MonoBehaviour
     // ==================== メッシュ生成 ====================
 
     /// <summary>
+    /// Far At Infinity 用の再アンカリング（位置＋向き）．<see cref="Identity"/> のときは
+    /// 従来どおり頂点(<see cref="target"/>)そのものを原点とするローカル座標になる．
+    /// </summary>
+    private struct FarAnchor
+    {
+        public Vector3 offset;
+        public Quaternion rotation;
+        public static readonly FarAnchor Identity =
+            new FarAnchor { offset = Vector3.zero, rotation = Quaternion.identity };
+    }
+
+    /// <summary>
     /// 断面 N 枚の枠と側稜 4 本を，太さを持つ角柱として1つのメッシュに組み立てる．
     /// </summary>
-    private void BuildMesh()
+    /// <param name="apexPos">頂点(<see cref="target"/>)のワールド座標（この錐の今フレームの位置）</param>
+    /// <param name="apexRot">頂点の姿勢処理後の回転（この錐の今フレームの回転）</param>
+    /// <remarks>
+    /// <b>Far At Infinity</b>（<see cref="farAtInfinity"/>）が有効なとき，最遠断面と
+    /// 側稜の遠い側の端だけは，頂点ではなく <see cref="observer"/>（この錐を描画するカメラ）
+    /// の<b>位置と向きの両方</b>を基準に再アンカリングする．
+    ///
+    /// ワールド座標は通常 <c>apexPos + apexRot・localVertex</c> になる（メッシュのローカル座標
+    /// はこの錐の Transform で変換されるため）．最遠断面のローカル頂点に
+    /// <c>FarAnchor{ offset = apexRot⁻¹・(observerPos − apexPos), rotation = apexRot⁻¹・observerRot }</c>
+    /// を適用すると，
+    /// <c>apexPos + apexRot・(offset + rotation・localDir) = observerPos + observerRot・localDir</c>
+    /// となり，<b>頂点と観測者の間の並進（δ, D）も相対回転（θ）も式から完全に消える</b>．
+    /// この錐を描画するカメラは常に observer 自身なので（<see cref="ComputeFarAnchor"/> 参照），
+    /// 結果として最遠断面は<b>画面上に完全固定されたリファレンス枠</b>になる
+    /// （並進・回転どちらの誤差にも反応しない）．誤差の手がかりは近断面だけが担う．
+    /// d2 の値自体は見かけの角度に影響しない（方向だけで決まる）ので，線幅計算などは
+    /// そのまま d2 を使い続けてよい．
+    /// </remarks>
+    private void BuildMesh(Vector3 apexPos, Quaternion apexRot)
     {
         vertices.Clear();
         colors.Clear();
@@ -311,6 +382,8 @@ public class ConeGuide : MonoBehaviour
         // 線幅は角度指定．距離 d での「半」線幅 = d·tan(幅/2)（ワールド線幅 = 2·d·tan(幅/2)）
         float tanHalfWidth = Mathf.Tan(lineWidthDeg * 0.5f * Mathf.Deg2Rad);
 
+        FarAnchor farAnchor = ComputeFarAnchor(apexPos, apexRot);
+
         // --- 断面の枠（各 4 辺） ---
         for (int i = 0; i < n; i++)
         {
@@ -318,7 +391,8 @@ public class ConeGuide : MonoBehaviour
             float d = Mathf.Lerp(d1, dN, t);
             Color c = SectionColor(t);
             float half = d * tanHalfWidth;       // この断面での線の半太さ
-            Vector3[] corner = Corners(d, d * tanAlpha);
+            bool isFarthest = (i == n - 1);
+            Vector3[] corner = Corners(d, d * tanAlpha, isFarthest ? farAnchor : FarAnchor.Identity);
 
             for (int e = 0; e < 4; e++)
             {
@@ -331,8 +405,8 @@ public class ConeGuide : MonoBehaviour
         {
             // 既定は角錐台の側稜（最近断面〜最遠断面）．ON なら頂点まで延ばす
             float dStart = ridgeExtendToApex ? 0f : d1;
-            Vector3[] a = Corners(dStart, dStart * tanAlpha);
-            Vector3[] b = Corners(dN, dN * tanAlpha);
+            Vector3[] a = Corners(dStart, dStart * tanAlpha, FarAnchor.Identity);
+            Vector3[] b = Corners(dN, dN * tanAlpha, farAnchor);
             Color ca = SectionColor(0f);   // 手前側（頂点寄り）の色
             Color cb = SectionColor(1f);   // 最遠断面の色
 
@@ -351,17 +425,48 @@ public class ConeGuide : MonoBehaviour
     }
 
     /// <summary>
-    /// 距離 d・半幅 w の矩形断面の4隅（ローカル座標，反時計回り）を返す．
-    /// 錐の軸は +Z（カメラの前方）．
+    /// Far At Infinity 用の再アンカリング（<see cref="FarAnchor"/>）を計算する．
+    /// 無効（OFF，または Observer 未設定）なら <see cref="FarAnchor.Identity"/>
+    /// （＝従来どおり頂点基準・回転もそのまま）を返す．
     /// </summary>
-    private static Vector3[] Corners(float d, float w)
+    private FarAnchor ComputeFarAnchor(Vector3 apexPos, Quaternion apexRot)
+    {
+        if (!farAtInfinity) return FarAnchor.Identity;
+
+        if (observer == null)
+        {
+            if (!observerMissingWarned)
+            {
+                Debug.LogWarning("[ConeGuide] " + name + ": Far At Infinity が有効ですが Observer が"
+                    + "未設定のため，通常の有限距離（頂点基準）として描画します。", this);
+                observerMissingWarned = true;
+            }
+            return FarAnchor.Identity;
+        }
+        observerMissingWarned = false;
+
+        Quaternion apexRotInv = Quaternion.Inverse(apexRot);
+        return new FarAnchor
+        {
+            offset = apexRotInv * (observer.position - apexPos),
+            rotation = apexRotInv * observer.rotation,
+        };
+    }
+
+    /// <summary>
+    /// 距離 d・半幅 w の矩形断面の4隅（ローカル座標，反時計回り）を，
+    /// <paramref name="anchor"/>（Far At Infinity 用の位置・向きの再アンカリング）を適用して返す．
+    /// 錐の軸は +Z（カメラの前方）．<paramref name="anchor"/> は通常
+    /// <see cref="FarAnchor.Identity"/>（＝頂点そのものが原点，向きも素通し）を渡す．
+    /// </summary>
+    private static Vector3[] Corners(float d, float w, FarAnchor anchor)
     {
         return new[]
         {
-            new Vector3(-w, -w, d),
-            new Vector3( w, -w, d),
-            new Vector3( w,  w, d),
-            new Vector3(-w,  w, d),
+            anchor.offset + anchor.rotation * new Vector3(-w, -w, d),
+            anchor.offset + anchor.rotation * new Vector3( w, -w, d),
+            anchor.offset + anchor.rotation * new Vector3( w,  w, d),
+            anchor.offset + anchor.rotation * new Vector3(-w,  w, d),
         };
     }
 
@@ -502,7 +607,7 @@ public class ConeGuide : MonoBehaviour
     {
         public float near, far, alpha, width;
         public int sections;
-        public bool ridges, apex, dual;
+        public bool ridges, apex, dual, infinity;
         public Color line, nearC, farC;
 
         public static GeometryKey From(ConeGuide g)
@@ -517,6 +622,7 @@ public class ConeGuide : MonoBehaviour
                 ridges = g.drawRidges,
                 apex = g.ridgeExtendToApex,
                 dual = g.dualColorMode,
+                infinity = g.farAtInfinity,
                 line = g.lineColor,
                 nearC = g.nearColor,
                 farC = g.farColor,
@@ -527,6 +633,7 @@ public class ConeGuide : MonoBehaviour
         {
             return near == o.near && far == o.far && alpha == o.alpha && width == o.width
                 && sections == o.sections && ridges == o.ridges && apex == o.apex && dual == o.dual
+                && infinity == o.infinity
                 && line == o.line && nearC == o.nearC && farC == o.farC;
         }
     }
