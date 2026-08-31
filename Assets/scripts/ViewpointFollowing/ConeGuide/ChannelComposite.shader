@@ -1,12 +1,15 @@
 ﻿// 四角錐ガイド（09 仕様 §2.2 / §3.7）の3チャンネル独立合成シェーダ．
 //
-// 6入力を受け，背景・箱・ガイドの3チャンネルを独立に合成して1枚に出す:
-//   BG_Live / BG_Ghost   … 環境のみを描いた背景（アルファ不使用）
-//   Box_Other / Box_Self … 錐のみを描いた透明背景のRT（アルファ = 箱マスク）
-//   Guide_Near / Guide_Target … 近い箱(Cone_Other)/的(Cone_SelfRef)のみを描いた
+// 背景・箱・ガイドの3チャンネルを独立に合成して1枚に出す:
+//   BG_Live / BG_Ghost     … 環境のみを描いた背景（アルファ不使用）
+//   Box_Other / Box_Self   … 錐のみを描いた透明背景のRT（アルファ = 箱マスク）
+//   Guide_Now / Guide_Delayed … 近い箱(Cone_Other)の「今」/「数百ms前」のみを描いた
 //                                 透明背景のRT（アルファ = ガイドマスク）。
-//                                 Guide_Near は Box_Other をそのまま再利用する
-//                                 （読み取るだけで箱チャンネルの結果には影響しない）
+//                                 Guide_Now は Box_Other をそのまま再利用し，
+//                                 Guide_Delayed は DelayedFrameBuffer が同じ
+//                                 テクスチャから複製した過去フレーム
+//                                 （4ストローク歩行シーンと同じ「今 vs 過去の自分」の
+//                                 仕組みを近い箱に適用したもの。09 §3.7）
 //
 // 背景は既存 FourStroke.shader と同じ扱い（グレースケール化・中間グレー軸の輝度反転・
 // 台形波クロスフェード）。矩形波交替は重みが 1/0 になるだけの特殊ケースとして同じ式で処理する。
@@ -33,8 +36,8 @@ Shader "Hidden/ChannelComposite"
         _BgGhost ("BG Ghost", 2D) = "black" {}
         _BoxOther ("Box Other", 2D) = "black" {}
         _BoxSelf ("Box Self", 2D) = "black" {}
-        _GuideNear ("Guide Near", 2D) = "black" {}
-        _GuideTarget ("Guide Target", 2D) = "black" {}
+        _GuideNow ("Guide Now", 2D) = "black" {}
+        _GuideDelayed ("Guide Delayed", 2D) = "black" {}
 
         _BgWeightLive ("BG Weight Live", Range(0, 1)) = 1
         _BgWeightGhost ("BG Weight Ghost", Range(0, 1)) = 0
@@ -47,8 +50,8 @@ Shader "Hidden/ChannelComposite"
         _BoxDelta ("Box Luminance Delta", Range(0, 1)) = 0.35
         _BoxColorBlend ("Box Color Blend (0/1)", Float) = 0
 
-        _GuideWeightNear ("Guide Weight Near", Range(0, 1)) = 0
-        _GuideWeightTarget ("Guide Weight Target", Range(0, 1)) = 0
+        _GuideWeightNow ("Guide Weight Now", Range(0, 1)) = 0
+        _GuideWeightDelayed ("Guide Weight Delayed", Range(0, 1)) = 0
         _GuideSign ("Guide Sign (+1/-1)", Float) = 1
         _GuideDelta ("Guide Luminance Delta", Range(0, 1)) = 0.35
     }
@@ -68,8 +71,8 @@ Shader "Hidden/ChannelComposite"
             sampler2D _BgGhost;
             sampler2D _BoxOther;
             sampler2D _BoxSelf;
-            sampler2D _GuideNear;
-            sampler2D _GuideTarget;
+            sampler2D _GuideNow;
+            sampler2D _GuideDelayed;
 
             float _BgWeightLive;
             float _BgWeightGhost;
@@ -82,8 +85,8 @@ Shader "Hidden/ChannelComposite"
             float _BoxDelta;
             float _BoxColorBlend;
 
-            float _GuideWeightNear;
-            float _GuideWeightTarget;
+            float _GuideWeightNow;
+            float _GuideWeightDelayed;
             float _GuideSign;
             float _GuideDelta;
 
@@ -153,13 +156,13 @@ Shader "Hidden/ChannelComposite"
                     result = bg + mask * _BoxSign * _BoxDelta;
                 }
 
-                // ---------- ガイドチャンネル（近い箱 ⇔ 的, 拡張 09 §3.7） ----------
+                // ---------- ガイドチャンネル（近い箱: 今 ⇔ 数百ms前, 拡張 09 §3.7） ----------
                 // 箱チャンネルとは独立した加算項。常に輝度変調のみ（別色モードは無い）
-                fixed4 guideNear = tex2D(_GuideNear, i.uv);
-                fixed4 guideTarget = tex2D(_GuideTarget, i.uv);
-                float guideMaskNear = guideNear.a * _GuideWeightNear;
-                float guideMaskTarget = guideTarget.a * _GuideWeightTarget;
-                float guideMask = saturate(guideMaskNear + guideMaskTarget);
+                fixed4 guideNow = tex2D(_GuideNow, i.uv);
+                fixed4 guideDelayed = tex2D(_GuideDelayed, i.uv);
+                float guideMaskNow = guideNow.a * _GuideWeightNow;
+                float guideMaskDelayed = guideDelayed.a * _GuideWeightDelayed;
+                float guideMask = saturate(guideMaskNow + guideMaskDelayed);
                 result += guideMask * _GuideSign * _GuideDelta;
 
                 return fixed4(saturate(result), 1.0);

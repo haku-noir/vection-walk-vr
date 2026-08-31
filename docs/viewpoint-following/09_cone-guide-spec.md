@@ -97,13 +97,11 @@
 | `GhostBGCam`（既存 GhostCamera） | 収録軌跡 | 環境のみ | `BG_Ghost` |
 | `LiveBoxCam`（新規） | ライブ頭部 | `ConeOther` のみ・透明クリア | `Box_Other` |
 | `GhostBoxCam`（新規） | 収録軌跡 | `ConeSelf` のみ・透明クリア | `Box_Self` |
-| `GuideBoxCam`（新規，拡張） | ライブ頭部（`LiveBoxCam` と同じ親） | `ConeSelfRef` のみ・透明クリア | `Box_Guide` |
 
 - `Cone_Other` は GhostCamera の姿勢に追従（Layer: `ConeOther`）
 - `Cone_Self` は CenterEyeAnchor の姿勢に追従（Layer: `ConeSelf`）
-- `Cone_SelfRef` は CenterEyeAnchor に追従・完全固定（Layer: `ConeSelfRef`，§3.5 参照）。
-  `Cone_Other` とレイヤを分けているのは、ガイド4ストロークチャンネル（§3.7）が
-  箱チャンネルと独立した入力（`Box_Other` とは別の `Box_Guide`）を持てるようにするため
+- ガイド4ストロークチャンネル（§3.7）は新規カメラ・RT を必要としない。
+  `Box_Other` を `DelayedFrameBuffer` で複製した過去フレームを使うだけである
 - 断面は頂点から 1〜3 m 先にあるためニアクリップ問題は生じない
 - **箱カメラは独自の深度バッファを持つ**（環境を描画しないため）。錐の内部だけで
   ZWrite/ZTest が働き、稜線オクルージョン（§1.6）が成立する。合成時に箱 RT を背景の上に
@@ -120,7 +118,7 @@
 既存 `FourStrokeCompositor` を2インスタンス化し、合成シェーダを4入力に拡張する。
 
 > **拡張**: 後日、上記2チャンネルとは独立な**3つ目のチャンネル（ガイド）**を追加した
-> （近い箱=Cone_Other ⇔ 的=Cone_SelfRef を4ストロークする用途。§3.7 参照）。
+> （近い箱の今⇔数百ms前を4ストロークする用途。§3.7 参照）。
 > 本節が記す「2チャンネル」は v1 仕様当時の範囲で、実装は現在3チャンネル構成。
 
 ### 2.3 箱の4ストローク — 輝度変調方式が必要
@@ -223,90 +221,66 @@ rotation = apexRot⁻¹ · observerRot
 `farAtInfinity` は `mirrorFrom` の同期対象（2つの錐は同じ見えを保つ必要があるため）。
 `observer` は錐ごとに異なる固有値なので同期しない。
 
-### 3.5 自分基準リファレンス（Cone_SelfRef，拡張）
+### 3.5 自分基準リファレンス（Cone_SelfRef）— M8 で廃止
 
-これまでの箱は「頂点＝相手、観測者＝自分（または逆）」という**2者間の相対誤差**を
-示すものだった。これに加えて、Cone_Other の近断面が**どこに来れば誤差ゼロなのか**を
-視覚的に明示する、頂点＝観測者＝**自分自身**という特殊な錐 `Cone_SelfRef` を追加した。
-
-**幾何的な性質**: 頂点と観測者が同一点（自分の頭）なので、並進誤差 (apexPos − observerPos)
-は常にゼロ。§3.4 の全断面ロック（`lockAllSections`）を重ねがけすることで、姿勢処理
-（LPF/ゼロ化）や target/observer 実装上の微小な位置ズレに由来する残差も消し、
-**錐全体を画面上に完全に静止した「的」**にする。ConePoseFilter は付けない
-（target の生の回転をそのまま使うことで，フィルタによる残差そのものを発生させない）。
-
-| パラメータ | 値 |
-|---|---|
-| 頂点 (`target`) | ライブ頭部（`Cone_Self` と同じ） |
-| Observer | `LiveBoxCam`（`Cone_Other` と同じ＝ライブ視野に描かれる） |
-| レイヤ | `ConeOther`（`Cone_Other` と同じ。新規カメラ・RT・合成チャンネルは不要） |
-| `Far At Infinity` / `lockAllSections` | 両方 ON（常に完全固定） |
-| 見た目 | 単色・緑（`Cone_Other`/`Cone_Self` の色分けと区別するため）。`mirrorFrom` は設定しない |
-| シェーダ | `Hidden/ConeLineOverlay`（`Cone_Other`/`Cone_Self` とは別。下記の深度競合対策） |
-
-> **深度競合への対策**: `Cone_Other` と `Cone_SelfRef` は同じ `LiveBoxCam`・同じ深度
-> バッファに描かれる。通常の `Hidden/ConeLine` は稜線オクルージョン（§1.6）のため
-> `ZWrite On / ZTest LEqual` なので、誤差ゼロ付近で両者が画面上でほぼ重なると
-> **奥にある方が手前の物体に隠されて消える**（実際に発生した不具合）。
-> `Cone_SelfRef` 側だけ専用シェーダ `Hidden/ConeLineOverlay`
-> （`ZTest Always` / `ZWrite Off` / `Queue = Geometry+50`）に切り替えることで，
-> 常に最後に・他の深度を無視して手前に描かれるようにした。`Cone_SelfRef` 自身は
-> 誤差に依存しない固定形状なので，内部の前後多義性解消（ZTest LEqual）は不要。
-
-**使い方**: ライブ視野には常に「Cone_Other の近断面・遠断面（相手＝収録軌跡との誤差、動く）」
-と「Cone_SelfRef（自分の的、静止）」が同時に見える。**Cone_Other の近断面を
-Cone_SelfRef に重ねに行く**ことで、相手の頭部と自分の頭部の位置・向きを完全に
-一致させられる（Cone_Other の遠断面が Far At Infinity で既に固定されているのと
-合わせて、視野内に「動く近断面」と「静止した的」が明確に対比される）。
+M7 では頂点＝観測者＝自分自身という特殊な錐 `Cone_SelfRef`（常に画面固定の「的」）を
+追加し、`Cone_Other` の近断面をこれに合わせに行くガイド4ストロークを構成していた。
+M8 でこの方式は**廃止**し、§3.7 の「近い箱の今 vs 数百ms前」方式に置き換えた
+（廃止の経緯は §3.7 冒頭を参照）。`ConeGuide.ConeKind.SelfRef` /
+`ConeGuideLayers.ConeSelfRefName` / `Hidden/ConeLineOverlay` シェーダ /
+`Cone_SelfRef` 用の専用カメラ・RT は、いずれもコードから削除済み。
 
 ### 3.6 近断面・遠断面の色分け（既定 ON 化）
 
 近＝シアン／遠＝マゼンタの色分け（`dualColorMode`、既存パラメータ。§3.1 参照）を
-既定で有効化した。3つの錐（`Cone_Other` の近・遠・`Cone_SelfRef`）を同一視野内で
-同時に見分けられるようにするため。
+`Cone_Other`/`Cone_Self` の既定で有効化した。
 
 > **注意**: 箱の4ストローク（`BoxMode.FourStroke`）は輝度変調方式（§2.3）のため
 > 色分けとは排他。`ChannelCompositor.EnforceDualColorExclusivity` が箱チャンネルを
 > 4ストロークに切り替えたタイミングで `dualColorMode` を自動的に無効化する（警告ログ）。
-> `Cone_SelfRef` は§3.7のガイドチャンネル（`Box_Other`/`Box_Self` とは別の `Box_Guide`
-> 経由）で合成されており、合成シェーダの `_BoxColorBlend`（箱チャンネルのみに効く
-> グローバル切替）の影響を受けない。ガイドチャンネルは常に輝度変調のみなので、
-> `Cone_SelfRef` の緑は箱チャンネルの色分け設定に関わらず変化しない。
+> ガイドチャンネル（§3.7）は常に輝度変調のみで別色モードを持たないため，この排他制御の
+> 対象外（箱チャンネルの色分け設定とは独立に動作する）。
 
-### 3.7 ガイド4ストロークチャンネル（近い箱⇔的, 拡張）
+### 3.7 ガイド4ストロークチャンネル（近い箱: 今⇔数百ms前）
 
-`Cone_Other` の近断面を `Cone_SelfRef`（的）へ視覚的に引き込むための，箱チャンネルとは
-**完全に独立した3つ目のチャンネル**。既存の箱4ストローク（§2.3 の輝度変調方式）と
-まったく同じ数式・`ChannelPhase` 部品を再利用しつつ，入力する2枚のマスクだけを
-「Cone_Other（近い箱）」「Cone_SelfRef（的）」に置き換えたもの。
+**経緯（M8 での方式変更）**: 当初（M8 初版）は「近い箱（`Cone_Other`）⇔ 的
+（`Cone_SelfRef`）」という2オブジェクト間の4ストロークとして実装した。しかし
+4ストローク運動錯視の理論的根拠（Reichardt型の符号依存運動検出器，reverse-phi）を
+文献で確認したところ、この技術は**密な画像・小さい変位**で実証されており、
+疎なワイヤフレーム・誤差の大きさに応じて変わりうる大きな変位という条件は、
+効果が弱まる・消えるリスクがあると判明した（詳細は本ドキュメント外の会話ログ参照）。
 
-**鍵となる幾何**: Far At Infinity 中，`Cone_Other` の遠断面は観測者（自分）基準で
-完全固定され，`Cone_SelfRef`（同じく完全固定）と誤差ゼロ付近で厳密に一致する
-（§3.4 / §3.5）。したがって「Cone_Other 全体（近断面＋遠断面＋稜線）」と
-「Cone_SelfRef 全体」を4ストロークすると，重なっている遠断面同士は運動信号を生まず，
-**ズレている近断面だけが「近い箱→的」への一方向の運動信号を生む**。近断面と遠断面を
-別レイヤに分離する改修は不要。
+一方、4ストローク歩行シーン（[08](08_fourstroke.md)）の「今 vs 数百ms前の自分」
+（`FourStrokeCompositor` の `Enhance` 極性）は、密な実写映像・小さく物理的に妥当な
+変位という、文献の実証条件に近い。そこでガイドチャンネルを**近い箱自体の
+「今」と「数百ms前」の4ストローク**に書き換えた。`Cone_SelfRef` は不要になり削除した
+（§3.5）。
 
-| 入力 | 中身 | 撮るカメラ |
+**仕組み**: `Cone_Other`（近断面＋遠断面＋稜線，`Box_Other`）を
+[`DelayedFrameBuffer`](../../Assets/scripts/ViewpointFollowing/FourStroke/DelayedFrameBuffer.cs)
+で一定レートでリングバッファへ複製し，数百ms前の状態を取り出す。ChannelPhase の
+輝度変調方式（§2.3 と同じ数式）は変えず，入力する2枚のマスクを「今の近い箱」
+「数百ms前の近い箱」に置き換えただけである。
+
+| 入力 | 中身 | 作り方 |
 |---|---|---|
-| Guide_Near | `Box_Other` を再利用（Cone_Other 全体） | `LiveBoxCam`（既存） |
-| Guide_Target | `Cone_SelfRef` のみ（透明背景） | `GuideBoxCam`（新規） |
+| Guide_Now | `Box_Other` を再利用（近い箱の今） | 既存の `LiveBoxCam` |
+| Guide_Delayed | `Box_Other` の数百ms前 | `DelayedFrameBuffer`（`ChannelCompositor` と同じオブジェクトに配置） |
 
-`Cone_SelfRef` は箱チャンネルが使う `ConeOther` レイヤから**専用レイヤ `ConeSelfRef`**
-に分離し，専用カメラ `GuideBoxCam`／専用 RT `Box_Guide` で撮影する
-（実装アーキテクチャは §2.1 参照）。これにより：
-
-- 箱チャンネル（`Cone_Other` ⇔ `Cone_Self`，相互のワブル用）の `Box_Other` に
-  `Cone_SelfRef` が混入しなくなる（分離前は同一レイヤ共有により混入していた）
-- ガイドチャンネルと箱チャンネルは完全に独立した `ChannelPhase` インスタンス・
-  テクスチャ・合成シェーダ加算項を持ち，同時に有効化しても互いに干渉しない
+> **性質の違い（§3.7 旧方式との対比）**: 旧方式は「常に固定された的へ引き込む」信号
+> だったが、新方式は4ストローク歩行シーンの自己運動増強と同じ性質を持つ——**常に
+> 「今まさに起きている変化」を増強する**のであって、常に目標（誤差ゼロ）へ向かわせる
+> わけではない。被験者が実際に誤差を減らす方向に歩いていれば「今の近い箱」は
+> 「数百ms前の近い箱」より目標に近いはずなので、Enhance極性はその収束を後押しする。
+> 逆に誤差が拡大している最中は、同じ仕組みが拡大方向を後押ししてしまう点に注意。
 
 | パラメータ | 既定値 | 内容 |
 |---|---|---|
-| `Guide Mode` | SelfFixed | `BoxMode` を流用（Off/OtherFixed=近い箱固定/SelfFixed=的固定/矩形波交替/4ストローク）。既定は的を常時表示（Cone_SelfRef 導入時と同じ見え） |
-| `Guide Polarity` | Zero | Enhance＝近い箱→的への引き込み／Reversal＝逆方向（抵抗）／Zero＝統制（要パイロットで向き確認） |
+| `Guide Mode` | Off | `BoxMode` を流用（Off/OtherFixed=今固定/SelfFixed=数百ms前固定/矩形波交替/4ストローク） |
+| `Guide Polarity` | Zero | 4ストローク歩行シーンと同じ意味づけ：Enhance＝過去→現在の順で加速感／Reversal＝逆順で抵抗感／Zero＝統制 |
 | `Sync Guide Freq To Bg` / `Guide Frequency` | ON / 1.0Hz | f_box と同じ流儀（同期ON時は f_bg を使う） |
 | `Guide Delta` | 0.35 | 既存の箱の輝度変調量Δと同じ既定値 |
+| `DelayedFrameBuffer.delayFrames` / `captureFps` | 8 / 30fps ≈267ms | 4ストローク歩行シーンと同じ既定値 |
 
 合成式（既存の箱と同じ輝度変調方式，`ChannelComposite.shader`）:
 
@@ -410,8 +384,8 @@ final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
 | M4 | 4ストロークの2チャンネル化と別色モードの排他 | §2.3 |
 | M5 | 初期オフセット・誤差の成分分解・ログ列とファイル名タグ | §3.8 / §6 |
 | M6 | 遠断面の無限遠モード（Observerの位置・向き基準の再アンカリングで完全固定，仕様外の拡張） | §3.4 |
-| M7 | 自分基準リファレンス（Cone_SelfRef）＋近/遠の色分けを既定化，仕様外の拡張 | §3.5 / §3.6 |
-| M8 | ガイド4ストロークチャンネル（近い箱⇔的）を箱チャンネルと独立に追加，仕様外の拡張 | §3.7 |
+| M7 | 自分基準リファレンス（Cone_SelfRef）＋近/遠の色分けを既定化，仕様外の拡張（Cone_SelfRef は M8 で廃止） | §3.5 / §3.6 |
+| M8 | ガイド4ストロークチャンネルを箱チャンネルと独立に追加。当初は近い箱⇔的（Cone_SelfRef）で実装したが，理論的検証の結果「近い箱の今⇔数百ms前」（4ストローク歩行シーンと同じ方式）に作り直した，仕様外の拡張 | §3.7 |
 
 ### 実装上の決定（仕様に明記が無く、実装側で決めた点）
 
@@ -435,27 +409,21 @@ final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
   描かれるので `observer = GhostBoxCam`。`ConeGuideSceneUpgrader` が自動配線する。
   `farAtInfinity` フラグ自体は同期対象（`mirrorFrom`）だが、`observer` は錐ごとに
   異なる固有値なので同期しない
-- **Cone_SelfRef は専用レイヤ・専用カメラ／RT を持つ（M8 で変更）**: M7 時点では
-  `Cone_Other` と同じ `ConeOther` レイヤを共有し新規カメラ無しで実現していたが，
-  これだと `Box_Other` に `Cone_SelfRef` が常時混入し，箱チャンネル
-  （`Cone_Other`⇔`Cone_Self` のワブル用）が汚染される，かつガイドチャンネル
-  （M8, §3.7）が「近い箱だけ」を独立して扱えない。M8 で専用レイヤ `ConeSelfRef` ・
-  専用カメラ `GuideBoxCam` ・専用 RT `Box_Guide` に分離した
-- **Cone_SelfRef には ConePoseFilter を付けない**: 頂点＝観測者が同一点でも，
-  姿勢処理（ピッチLPF・ロールゼロ化）を通すと生の回転からズレて完全固定でなくなる。
-  target の生の回転をそのまま使うことで，フィルタ由来の残差そのものを発生させない
 - **色分けの既定値変更は Cone_Other/Cone_Self 双方に明示**: `dualColorMode` は
   `mirrorFrom` の同期対象だが，同期は実行時 `LateUpdate`（`ExecuteAlways`）に依存する。
   エディタでの実行タイミングに依存させないよう，`ConeGuideSceneUpgrader` が
   `Cone_Other` と `Cone_Self` の両方に明示的に設定する
-- **Cone_SelfRef の色は単色固定・mirrorFrom なし**: `Cone_Other`/`Cone_Self` の
-  近=シアン/遠=マゼンタと視覚的に区別するため。M8 でガイドチャンネル専用の
-  独立した加算項（常に輝度変調のみ）になったため，箱チャンネルの
-  `_BoxColorBlend`（色分け⇔輝度変調の切替）の影響を受けない（§3.6 参照）
-- **ガイドの「近い箱」入力は Box_Other を再利用**: `Cone_Other` 用に新しいマスクを
-  分離せず，既存の `Box_Other`（近断面＋遠断面＋稜線）をそのまま読む。誤差ゼロ付近で
-  遠断面が的（`Cone_SelfRef`）と厳密に一致するため，近断面だけが運動信号を生む
-  （§3.7 の幾何的根拠）。近断面のみを分離するメッシュ改修が不要になる
+- **ガイドチャンネルは方式を1度作り直した（M8 内での方針転換）**: 当初は
+  「近い箱⇔的（Cone_SelfRef）」という2オブジェクト間の4ストロークとして実装したが，
+  4ストローク運動錯視の理論的根拠を文献で確認したところ，疎なワイヤフレーム・
+  大きくなりうる変位という条件では効果が弱まるリスクがあると判明した（§3.7 参照）。
+  文献の実証条件（密な画像・小さい変位）に近い「今 vs 数百ms前の自分」
+  （4ストローク歩行シーンと同じ仕組み）に作り直し，`Cone_SelfRef` とその専用
+  レイヤ・カメラ・RT・シェーダ（`Hidden/ConeLineOverlay`）は削除した
+- **ガイドの「今」入力は Box_Other を再利用**: `Cone_Other` 用に新しいマスクを
+  分離せず，既存の `Box_Other`（近断面＋遠断面＋稜線）をそのまま読む。「数百ms前」は
+  `DelayedFrameBuffer` が同じテクスチャから複製する。近断面のみを分離するメッシュ
+  改修は不要
 - **ガイドチャンネルは常に輝度変調のみ**: 箱チャンネルと違い別色モードの分岐を
   設けていない。4ストロークの原理（輝度相関を負にする）上，色分けとの併用意義が薄いため
 

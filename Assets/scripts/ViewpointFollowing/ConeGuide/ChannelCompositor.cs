@@ -4,27 +4,29 @@ using UnityEngine.UI;
 /// <summary>
 /// 背景・箱・ガイドを<b>独立した3チャンネル</b>として合成する合成器（09 仕様 §2.2 / §3.7）．
 ///
-/// 6つの入力を受け取り，チャンネルごとに選んだ提示条件で合成して RawImage に出す:
+/// 入力を受け取り，チャンネルごとに選んだ提示条件で合成して RawImage に出す:
 ///
-/// | 入力 | 中身 | 撮るカメラ |
+/// | 入力 | 中身 | 撮るカメラ・作り方 |
 /// |---|---|---|
 /// | BG_Live | 環境（ライブ視点） | CenterEyeCapture / LiveReplayCamera |
 /// | BG_Ghost | 環境（収録視点） | GhostCamera / GhostReplayCamera |
 /// | Box_Other | Cone_Other のみ（透明背景） | LiveBoxCam |
 /// | Box_Self | Cone_Self のみ（透明背景） | GhostBoxCam |
-/// | Box_Guide | Cone_SelfRef のみ（透明背景） | GuideBoxCam |
+/// | Guide_Now | 近い箱の「今」＝ Box_Other をそのまま再利用 | LiveBoxCam |
+/// | Guide_Delayed | 近い箱の「数百ms前」＝ Box_Other を <see cref="DelayedFrameBuffer"/>
+///   でリングバッファに複製した過去フレーム | LiveBoxCam（遅延経由） |
 ///
 /// | チャンネル | 選択肢 |
 /// |---|---|
 /// | 背景 | Live固定 / Ghost固定 / 矩形波交替(f_bg) / 4ストローク(f_bg, 極性) |
 /// | 箱 | Off / Other固定 / Self固定 / 矩形波交替(f_box) / 4ストローク(f_box, 極性) |
-/// | ガイド | Off / 近い箱固定 / 的固定 / 矩形波交替(f_guide) / 4ストローク(f_guide, 極性) |
+/// | ガイド | Off / 今固定 / 数百ms前固定 / 矩形波交替(f_guide) / 4ストローク(f_guide, 極性) |
 ///
 /// 周波数・極性はチャンネルごとに独立．デューティ比は 50% 固定．
 /// **箱チャンネル**（Cone_Other⇔Cone_Self，相互のワブル用）と**ガイドチャンネル**
-/// （Cone_Other⇔Cone_SelfRef，近い箱を的に合わせ込むための誘導用）は互いに独立しており，
-/// 同時に有効化しても一方が他方のテクスチャ・位相を書き換えることはない
-/// （ガイドの「近い箱」入力は Box_Other をそのまま再利用するが，読み取るだけ）．
+/// （近い箱の今⇔数百ms前，4ストローク歩行シーンと同じ「今 vs 過去の自分」の仕組みを
+/// 近い箱に適用したもの）は互いに独立しており，同時に有効化しても一方が他方の
+/// テクスチャ・位相を書き換えることはない．
 /// </summary>
 /// <remarks>
 /// - <b>既存の ViewSwitcher の単一テクスチャ経路は変更していない</b>．この合成器が有効な間だけ
@@ -80,14 +82,6 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("Cone_Self のみ（透明背景・アルファ付き）= Box_Self RT")]
     public Texture boxSelfTexture;
 
-    /// <summary>
-    /// Cone_SelfRef（自分基準の完全固定リファレンス）のみを描いた透明背景の RenderTexture．
-    /// ガイドチャンネル（下記）専用の入力。<see cref="boxOtherTexture"/> と組み合わせて
-    /// 「近い箱（Cone_Other）⇔的（Cone_SelfRef）」の4ストロークを作る（09 §3.7）。
-    /// </summary>
-    [Tooltip("Cone_SelfRef のみ（透明背景・アルファ付き）= Box_Guide RT。ガイドチャンネル専用")]
-    public Texture guideTargetTexture;
-
     [Header("出力・連携先")]
     /// <summary>合成結果を表示する UI（CenterRawImage / ReplayRawImage）</summary>
     [Tooltip("合成結果を表示するRawImage")]
@@ -123,11 +117,13 @@ public class ChannelCompositor : MonoBehaviour
     public Camera ghostBoxCamera;
 
     /// <summary>
-    /// Box_Guide（Cone_SelfRef）を撮っているカメラ．非アクティブのときは古いフレームが
-    /// 残るため，ガイドチャンネルの的側の重みを 0 にする（liveBoxCamera 等と同じ理由）．
+    /// ガイドチャンネル用の遅延バッファ．近い箱（<see cref="boxOtherTexture"/>）を
+    /// 一定レートでリングバッファへ複製し，数百ms前の「近い箱」を
+    /// <see cref="DelayedFrameBuffer.DelayedTexture"/> として取り出す
+    /// （4ストローク歩行シーンの仕組みをそのまま流用．09 §3.7）．
     /// </summary>
-    [Tooltip("Box_Guide（Cone_SelfRef）を撮るカメラ（非アクティブ時に古いフレームを出さないために参照する）")]
-    public Camera guideBoxCamera;
+    [Tooltip("ガイドチャンネル用の遅延バッファ（近い箱の数百ms前を取り出す）")]
+    public DelayedFrameBuffer guideDelayBuffer;
 
     [Header("背景チャンネル")]
     /// <summary>背景の提示条件</summary>
@@ -176,25 +172,25 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("箱の輝度変調量 Δ（0-1輝度、既定0.35）")]
     [Range(0f, 1f)] public float boxDelta = 0.35f;
 
-    [Header("ガイドチャンネル（近い箱⇔的, 拡張 09 §3.7）")]
+    [Header("ガイドチャンネル（近い箱: 今⇔数百ms前, 拡張 09 §3.7）")]
     /// <summary>
     /// ガイドチャンネルの提示条件．<see cref="BoxMode"/> をそのまま流用する
-    /// （Other=近い箱(Cone_Other) / Self=的(Cone_SelfRef)）．
+    /// （Other=近い箱の「今」 / Self=近い箱の「数百ms前」）．
     /// 既存の「箱チャンネル」（Cone_Other⇔Cone_Self）とは完全に独立しており，
-    /// 同時に併用しても互いのテクスチャ・位相を書き換えない．
-    /// 既定 SelfFixed（的を常時表示）は Cone_SelfRef 導入時点の見た目と同じ．
+    /// 同時に併用しても互いのテクスチャ・位相を書き換えない．既定は Off
+    /// （明示的に有効化するまでガイド効果は掛からない）．
     /// </summary>
-    [Tooltip("ガイドチャンネルの提示条件（Other=近い箱=Cone_Other / Self=的=Cone_SelfRef）。箱チャンネルとは独立")]
-    public BoxMode guideMode = BoxMode.SelfFixed;
+    [Tooltip("ガイドチャンネルの提示条件（Other=近い箱の今 / Self=近い箱の数百ms前）。箱チャンネルとは独立")]
+    public BoxMode guideMode = BoxMode.Off;
 
     /// <summary>
     /// ガイドチャンネルの4ストローク極性（guideMode = FourStroke のときのみ有効）．
-    /// Enhance＝近い箱→的の方向へ引き込む信号，Reversal＝逆方向（抵抗），
+    /// 4ストローク歩行シーン（<see cref="FourStrokeCompositor.Polarity"/>）と同じ意味づけ:
+    /// Enhance＝過去→現在の順で提示し実運動と同方向の信号を加算（加速感），
+    /// Reversal＝現在→過去の順で逆向きの信号（抵抗・逆行感），
     /// Zero＝運動信号なし（輝度反転フリッカーのみの統制条件）．
-    /// A=近い箱／B=的の割り当てなので，Enhance/Reversal のラベルの向きは
-    /// パイロットで見えを確認すること（既存の箱4ストロークと同じ注意点）．
     /// </summary>
-    [Tooltip("ガイドチャンネルの4ストローク極性（Enhance=近い箱→的に引き込む/Reversal=逆/Zero=統制）")]
+    [Tooltip("ガイドチャンネルの4ストローク極性（Enhance=加速感/Reversal=抵抗感/Zero=統制）")]
     public FourStrokeCompositor.Polarity guidePolarity = FourStrokeCompositor.Polarity.Zero;
 
     /// <summary>f_guide を f_bg に同期させるか（既定ON。箱チャンネルと同じ流儀）</summary>
@@ -229,7 +225,7 @@ public class ChannelCompositor : MonoBehaviour
     /// <summary>箱チャンネルで今どちらが支配的か（0 = Other, 1 = Self）</summary>
     public int BoxDominantSource { get; private set; }
 
-    /// <summary>ガイドチャンネルで今どちらが支配的か（0 = 近い箱=Cone_Other, 1 = 的=Cone_SelfRef）</summary>
+    /// <summary>ガイドチャンネルで今どちらが支配的か（0 = 近い箱の今, 1 = 近い箱の数百ms前）</summary>
     public int GuideDominantSource { get; private set; }
 
     /// <summary>実際に使っている f_bg[Hz]</summary>
@@ -307,7 +303,7 @@ public class ChannelCompositor : MonoBehaviour
 
     /// <summary>
     /// 全チャンネルの提示位相をリセットする（試行開始時に呼ぶ）．
-    /// 背景はライブ提示から，箱・ガイドはそれぞれ Other/近い箱 提示から始まる．
+    /// 背景はライブ提示から，箱は Other 提示から，ガイドは近い箱の「今」提示から始まる．
     /// </summary>
     public void ResetPhase()
     {
@@ -390,35 +386,43 @@ public class ChannelCompositor : MonoBehaviour
         if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled) boxWeightOther = 0f;
         if (ghostBoxCamera != null && !ghostBoxCamera.isActiveAndEnabled) boxWeightSelf = 0f;
 
-        // ---------- ガイドチャンネル（近い箱=Cone_Other ⇔ 的=Cone_SelfRef, 09 §3.7） ----------
+        // ---------- ガイドチャンネル（近い箱の今 ⇔ 数百ms前, 09 §3.7） ----------
         // 箱チャンネルとは完全に独立（別の ChannelPhase・別のテクスチャ・別の合成項）。
-        // 近い箱の入力は既存の boxOtherTexture をそのまま再利用する（Cone_Other は
-        // 誤差ゼロ付近で遠断面が的と厳密に一致するため，近断面だけが運動信号を生む）
-        float guideWeightNear, guideWeightTarget, guideSign;
+        // 4ストローク歩行シーンと同じ「今 vs 過去の自分」の仕組みを近い箱に適用したもの。
+        // 今の入力は既存の boxOtherTexture をそのまま再利用し，過去の入力は
+        // guideDelayBuffer（DelayedFrameBuffer）が同じテクスチャから複製する
+        float guideWeightNow, guideWeightDelayed, guideSign;
         switch (guideMode)
         {
             case BoxMode.Off:
-                guideWeightNear = 0f; guideWeightTarget = 0f; guideSign = 1f;
+                guideWeightNow = 0f; guideWeightDelayed = 0f; guideSign = 1f;
                 break;
             case BoxMode.OtherFixed:
-                guideWeightNear = 1f; guideWeightTarget = 0f; guideSign = 1f;
+                guideWeightNow = 1f; guideWeightDelayed = 0f; guideSign = 1f;
                 GuideDominantSource = 0;
                 break;
             case BoxMode.SelfFixed:
-                guideWeightNear = 0f; guideWeightTarget = 1f; guideSign = 1f;
+                guideWeightNow = 0f; guideWeightDelayed = 1f; guideSign = 1f;
                 GuideDominantSource = 1;
                 break;
             default: // SquareAlternate / FourStroke
                 guidePhase.Advance(dt, GuideFrequency, WaveformOf(guideMode), guidePolarity);
-                guideWeightNear = guidePhase.WeightA;
-                guideWeightTarget = guidePhase.WeightB;
+                guideWeightNow = guidePhase.WeightA;
+                guideWeightDelayed = guidePhase.WeightB;
                 guideSign = guidePhase.Inverted ? -1f : 1f;
                 GuideDominantSource = guidePhase.DominantSource;
                 break;
         }
 
-        if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled) guideWeightNear = 0f;
-        if (guideBoxCamera != null && !guideBoxCamera.isActiveAndEnabled) guideWeightTarget = 0f;
+        // 箱カメラ（liveBoxCamera）が止まっている間は Box_Other 自体が更新されないため，
+        // 今側・遅延側とも古いフレームのまま静止してしまう。両方の重みを 0 にする
+        if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled)
+        {
+            guideWeightNow = 0f;
+            guideWeightDelayed = 0f;
+        }
+
+        Texture guideDelayedTexture = guideDelayBuffer != null ? guideDelayBuffer.DelayedTexture : null;
 
         // ---------- 合成 ----------
         material.SetTexture("_BgLive", bgLiveTexture);
@@ -434,10 +438,10 @@ public class ChannelCompositor : MonoBehaviour
         material.SetFloat("_BoxSign", boxSign);
         material.SetFloat("_BoxDelta", boxDelta);
         material.SetFloat("_BoxColorBlend", DualColorActive ? 1f : 0f);
-        material.SetTexture("_GuideNear", boxOtherTexture != null ? boxOtherTexture : Texture2D.blackTexture);
-        material.SetTexture("_GuideTarget", guideTargetTexture != null ? guideTargetTexture : Texture2D.blackTexture);
-        material.SetFloat("_GuideWeightNear", guideWeightNear);
-        material.SetFloat("_GuideWeightTarget", guideWeightTarget);
+        material.SetTexture("_GuideNow", boxOtherTexture != null ? boxOtherTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideDelayed", guideDelayedTexture != null ? guideDelayedTexture : Texture2D.blackTexture);
+        material.SetFloat("_GuideWeightNow", guideWeightNow);
+        material.SetFloat("_GuideWeightDelayed", guideWeightDelayed);
         material.SetFloat("_GuideSign", guideSign);
         material.SetFloat("_GuideDelta", guideDelta);
         Graphics.Blit(null, OutputTexture, material);
@@ -560,7 +564,7 @@ public class ChannelCompositor : MonoBehaviour
         GUI.Label(new Rect(Screen.width - 430, 10, 420, 20), "背景: " + bg);
         GUI.Label(new Rect(Screen.width - 430, 30, 420, 20),
             "箱: " + box + (DualColorActive ? "（別色モード）" : ""));
-        GUI.Label(new Rect(Screen.width - 430, 110, 420, 20), "ガイド(近い箱⇔的): " + guide);
+        GUI.Label(new Rect(Screen.width - 430, 110, 420, 20), "ガイド(近い箱: 今⇔数百ms前): " + guide);
 
         // 別色モードを自動無効化した場合は目立つように出す（条件の取り違えを防ぐ）
         if (dualColorAutoDisabled)
