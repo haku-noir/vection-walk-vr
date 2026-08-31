@@ -10,11 +10,17 @@ using UnityEngine.UI;
 /// |---|---|---|
 /// | BG_Live | 環境（ライブ視点） | CenterEyeCapture / LiveReplayCamera |
 /// | BG_Ghost | 環境（収録視点） | GhostCamera / GhostReplayCamera |
-/// | Box_Other | Cone_Other のみ（透明背景） | LiveBoxCam |
+/// | Box_Other | Cone_Other 全体（近断面＋遠断面＋稜線，透明背景） | LiveBoxCam |
 /// | Box_Self | Cone_Self のみ（透明背景） | GhostBoxCam |
-/// | Guide_Now | 近い箱の「今」＝ Box_Other をそのまま再利用 | LiveBoxCam |
-/// | Guide_Delayed | 近い箱の「数百ms前」＝ Box_Other を <see cref="DelayedFrameBuffer"/>
-///   でリングバッファに複製した過去フレーム | LiveBoxCam（遅延経由） |
+/// | Guide_NearNow | 近断面のみの「今」 | LiveBoxNearCam |
+/// | Guide_NearDelayed | 近断面のみの「数百ms前」 | LiveBoxNearCam を
+///   <see cref="DelayedFrameBuffer"/> でリングバッファに複製した過去フレーム |
+/// | Guide_FarNow | 遠断面のみの「今」 | LiveBoxFarCam |
+/// | Guide_FarDelayed | 遠断面のみの「数百ms前」 | LiveBoxFarCam を
+///   <see cref="DelayedFrameBuffer"/> でリングバッファに複製した過去フレーム |
+/// | Guide_RidgeNow | 稜線のみの「今」 | LiveBoxRidgeCam |
+/// | Guide_RidgeDelayed | 稜線のみの「数百ms前」 | LiveBoxRidgeCam を
+///   <see cref="DelayedFrameBuffer"/> でリングバッファに複製した過去フレーム |
 ///
 /// | チャンネル | 選択肢 |
 /// |---|---|
@@ -24,9 +30,16 @@ using UnityEngine.UI;
 ///
 /// 周波数・極性はチャンネルごとに独立．デューティ比は 50% 固定．
 /// **箱チャンネル**（Cone_Other⇔Cone_Self，相互のワブル用）と**ガイドチャンネル**
-/// （近い箱の今⇔数百ms前，4ストローク歩行シーンと同じ「今 vs 過去の自分」の仕組みを
-/// 近い箱に適用したもの）は互いに独立しており，同時に有効化しても一方が他方の
+/// （近断面・遠断面それぞれの今⇔数百ms前，4ストローク歩行シーンと同じ「今 vs 過去の自分」の
+/// 仕組みを箱に適用したもの）は互いに独立しており，同時に有効化しても一方が他方の
 /// テクスチャ・位相を書き換えることはない．
+///
+/// ガイドチャンネルの<b>提示条件（モード・極性・周波数）は近断面・遠断面・稜線で共有</b>する
+/// （位相がずれると3者の4ストロークが噛み合わず，かえって見えにくくなるため）．
+/// 一方，<see cref="guideNearEnabled"/> / <see cref="guideFarEnabled"/> /
+/// <see cref="guideRidgeEnabled"/> で<b>どの部分にガイド効果を掛けるかは独立に ON/OFF</b>
+/// できる（09 §3.7 拡張）．稜線そのものの表示/非表示は既存の
+/// <see cref="ConeGuide.drawRidges"/> で別途 ON/OFF できる（ガイド効果とは独立）．
 /// </summary>
 /// <remarks>
 /// - <b>既存の ViewSwitcher の単一テクスチャ経路は変更していない</b>．この合成器が有効な間だけ
@@ -82,6 +95,27 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("Cone_Self のみ（透明背景・アルファ付き）= Box_Self RT")]
     public Texture boxSelfTexture;
 
+    /// <summary>
+    /// Cone_Other の近断面のみを描いた透明背景の RenderTexture（09 §3.7 拡張）．
+    /// ガイドチャンネルの「今」入力（近断面側）．未設定なら近断面のガイドは出ない．
+    /// </summary>
+    [Tooltip("Cone_Other 近断面のみ（透明背景）= Guide_NearNow RT")]
+    public Texture guideNearNowTexture;
+
+    /// <summary>
+    /// Cone_Other の遠断面のみを描いた透明背景の RenderTexture（09 §3.7 拡張）．
+    /// ガイドチャンネルの「今」入力（遠断面側）．未設定なら遠断面のガイドは出ない．
+    /// </summary>
+    [Tooltip("Cone_Other 遠断面のみ（透明背景）= Guide_FarNow RT")]
+    public Texture guideFarNowTexture;
+
+    /// <summary>
+    /// Cone_Other の稜線のみを描いた透明背景の RenderTexture（09 §3.7 拡張）．
+    /// ガイドチャンネルの「今」入力（稜線側）．未設定なら稜線のガイドは出ない．
+    /// </summary>
+    [Tooltip("Cone_Other 稜線のみ（透明背景）= Guide_RidgeNow RT")]
+    public Texture guideRidgeNowTexture;
+
     [Header("出力・連携先")]
     /// <summary>合成結果を表示する UI（CenterRawImage / ReplayRawImage）</summary>
     [Tooltip("合成結果を表示するRawImage")]
@@ -117,13 +151,48 @@ public class ChannelCompositor : MonoBehaviour
     public Camera ghostBoxCamera;
 
     /// <summary>
-    /// ガイドチャンネル用の遅延バッファ．近い箱（<see cref="boxOtherTexture"/>）を
-    /// 一定レートでリングバッファへ複製し，数百ms前の「近い箱」を
+    /// Guide_NearNow を撮っている専用カメラ．非アクティブのときは古いフレームが
+    /// 残るため，近断面ガイドの重みを 0 にする．
+    /// </summary>
+    [Tooltip("Guide_NearNow を撮る専用カメラ（非アクティブ時に古いフレームを出さないために参照する）")]
+    public Camera guideNearCamera;
+
+    /// <summary>
+    /// Guide_FarNow を撮っている専用カメラ．非アクティブのときは古いフレームが
+    /// 残るため，遠断面ガイドの重みを 0 にする．
+    /// </summary>
+    [Tooltip("Guide_FarNow を撮る専用カメラ（非アクティブ時に古いフレームを出さないために参照する）")]
+    public Camera guideFarCamera;
+
+    /// <summary>
+    /// Guide_RidgeNow を撮っている専用カメラ．非アクティブのときは古いフレームが
+    /// 残るため，稜線ガイドの重みを 0 にする．
+    /// </summary>
+    [Tooltip("Guide_RidgeNow を撮る専用カメラ（非アクティブ時に古いフレームを出さないために参照する）")]
+    public Camera guideRidgeCamera;
+
+    /// <summary>
+    /// ガイドチャンネル（近断面）用の遅延バッファ．<see cref="guideNearNowTexture"/> を
+    /// 一定レートでリングバッファへ複製し，数百ms前の「近断面」を
     /// <see cref="DelayedFrameBuffer.DelayedTexture"/> として取り出す
     /// （4ストローク歩行シーンの仕組みをそのまま流用．09 §3.7）．
     /// </summary>
-    [Tooltip("ガイドチャンネル用の遅延バッファ（近い箱の数百ms前を取り出す）")]
-    public DelayedFrameBuffer guideDelayBuffer;
+    [Tooltip("ガイドチャンネル（近断面）用の遅延バッファ")]
+    public DelayedFrameBuffer guideNearDelayBuffer;
+
+    /// <summary>
+    /// ガイドチャンネル（遠断面）用の遅延バッファ．<see cref="guideFarNowTexture"/> を
+    /// 一定レートでリングバッファへ複製し，数百ms前の「遠断面」を取り出す（09 §3.7 拡張）．
+    /// </summary>
+    [Tooltip("ガイドチャンネル（遠断面）用の遅延バッファ")]
+    public DelayedFrameBuffer guideFarDelayBuffer;
+
+    /// <summary>
+    /// ガイドチャンネル（稜線）用の遅延バッファ．<see cref="guideRidgeNowTexture"/> を
+    /// 一定レートでリングバッファへ複製し，数百ms前の「稜線」を取り出す（09 §3.7 拡張）．
+    /// </summary>
+    [Tooltip("ガイドチャンネル（稜線）用の遅延バッファ")]
+    public DelayedFrameBuffer guideRidgeDelayBuffer;
 
     [Header("背景チャンネル")]
     /// <summary>背景の提示条件</summary>
@@ -172,16 +241,37 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("箱の輝度変調量 Δ（0-1輝度、既定0.35）")]
     [Range(0f, 1f)] public float boxDelta = 0.35f;
 
-    [Header("ガイドチャンネル（近い箱: 今⇔数百ms前, 拡張 09 §3.7）")]
+    [Header("ガイドチャンネル（近断面・遠断面: 今⇔数百ms前, 拡張 09 §3.7）")]
     /// <summary>
     /// ガイドチャンネルの提示条件．<see cref="BoxMode"/> をそのまま流用する
-    /// （Other=近い箱の「今」 / Self=近い箱の「数百ms前」）．
-    /// 既存の「箱チャンネル」（Cone_Other⇔Cone_Self）とは完全に独立しており，
-    /// 同時に併用しても互いのテクスチャ・位相を書き換えない．既定は Off
-    /// （明示的に有効化するまでガイド効果は掛からない）．
+    /// （Other=「今」 / Self=「数百ms前」）．近断面・遠断面で共有する（位相がずれると
+    /// 噛み合わなくなるため）．既存の「箱チャンネル」（Cone_Other⇔Cone_Self）とは
+    /// 完全に独立しており，同時に併用しても互いのテクスチャ・位相を書き換えない．
+    /// 既定は Off（明示的に有効化するまでガイド効果は掛からない）．
     /// </summary>
-    [Tooltip("ガイドチャンネルの提示条件（Other=近い箱の今 / Self=近い箱の数百ms前）。箱チャンネルとは独立")]
+    [Tooltip("ガイドチャンネルの提示条件（Other=今 / Self=数百ms前）。近断面・遠断面で共有、箱チャンネルとは独立")]
     public BoxMode guideMode = BoxMode.Off;
+
+    /// <summary>
+    /// 近断面にガイド効果（今⇔数百ms前）を掛けるか．既定 ON（従来からの挙動を維持）．
+    /// </summary>
+    [Tooltip("近断面にガイド効果を掛けるか（既定ON）")]
+    public bool guideNearEnabled = true;
+
+    /// <summary>
+    /// 遠断面にガイド効果（今⇔数百ms前）を掛けるか．既定 OFF（新規追加の能力のため，
+    /// 明示的に有効化しない限り従来と同じ見えのままにする）．
+    /// </summary>
+    [Tooltip("遠断面にガイド効果を掛けるか（既定OFF、新規拡張）")]
+    public bool guideFarEnabled = false;
+
+    /// <summary>
+    /// 稜線にガイド効果（今⇔数百ms前）を掛けるか．既定 OFF（新規追加の能力のため，
+    /// 明示的に有効化しない限り従来と同じ見えのままにする）．
+    /// 稜線の表示/非表示自体は <see cref="ConeGuide.drawRidges"/> で別途制御する．
+    /// </summary>
+    [Tooltip("稜線にガイド効果を掛けるか（既定OFF、新規拡張）")]
+    public bool guideRidgeEnabled = false;
 
     /// <summary>
     /// ガイドチャンネルの4ストローク極性（guideMode = FourStroke のときのみ有効）．
@@ -386,11 +476,11 @@ public class ChannelCompositor : MonoBehaviour
         if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled) boxWeightOther = 0f;
         if (ghostBoxCamera != null && !ghostBoxCamera.isActiveAndEnabled) boxWeightSelf = 0f;
 
-        // ---------- ガイドチャンネル（近い箱の今 ⇔ 数百ms前, 09 §3.7） ----------
+        // ---------- ガイドチャンネル（近断面・遠断面それぞれの今 ⇔ 数百ms前, 09 §3.7） ----------
         // 箱チャンネルとは完全に独立（別の ChannelPhase・別のテクスチャ・別の合成項）。
-        // 4ストローク歩行シーンと同じ「今 vs 過去の自分」の仕組みを近い箱に適用したもの。
-        // 今の入力は既存の boxOtherTexture をそのまま再利用し，過去の入力は
-        // guideDelayBuffer（DelayedFrameBuffer）が同じテクスチャから複製する
+        // 4ストローク歩行シーンと同じ「今 vs 過去の自分」の仕組みを箱に適用したもの。
+        // 提示条件（モード・極性・周波数）は近断面・遠断面で共有し，どちらに掛けるかは
+        // guideNearEnabled / guideFarEnabled で独立に ON/OFF する
         float guideWeightNow, guideWeightDelayed, guideSign;
         switch (guideMode)
         {
@@ -414,15 +504,35 @@ public class ChannelCompositor : MonoBehaviour
                 break;
         }
 
-        // 箱カメラ（liveBoxCamera）が止まっている間は Box_Other 自体が更新されないため，
-        // 今側・遅延側とも古いフレームのまま静止してしまう。両方の重みを 0 にする
-        if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled)
+        // 近断面・遠断面それぞれの専用カメラが止まっている間はその入力の RT が
+        // 更新されないため，古いフレームのまま静止してしまう。その断面の重みを 0 にする
+        float guideNearWeightNow = guideNearEnabled ? guideWeightNow : 0f;
+        float guideNearWeightDelayed = guideNearEnabled ? guideWeightDelayed : 0f;
+        if (guideNearCamera != null && !guideNearCamera.isActiveAndEnabled)
         {
-            guideWeightNow = 0f;
-            guideWeightDelayed = 0f;
+            guideNearWeightNow = 0f;
+            guideNearWeightDelayed = 0f;
         }
 
-        Texture guideDelayedTexture = guideDelayBuffer != null ? guideDelayBuffer.DelayedTexture : null;
+        float guideFarWeightNow = guideFarEnabled ? guideWeightNow : 0f;
+        float guideFarWeightDelayed = guideFarEnabled ? guideWeightDelayed : 0f;
+        if (guideFarCamera != null && !guideFarCamera.isActiveAndEnabled)
+        {
+            guideFarWeightNow = 0f;
+            guideFarWeightDelayed = 0f;
+        }
+
+        float guideRidgeWeightNow = guideRidgeEnabled ? guideWeightNow : 0f;
+        float guideRidgeWeightDelayed = guideRidgeEnabled ? guideWeightDelayed : 0f;
+        if (guideRidgeCamera != null && !guideRidgeCamera.isActiveAndEnabled)
+        {
+            guideRidgeWeightNow = 0f;
+            guideRidgeWeightDelayed = 0f;
+        }
+
+        Texture guideNearDelayedTexture = guideNearDelayBuffer != null ? guideNearDelayBuffer.DelayedTexture : null;
+        Texture guideFarDelayedTexture = guideFarDelayBuffer != null ? guideFarDelayBuffer.DelayedTexture : null;
+        Texture guideRidgeDelayedTexture = guideRidgeDelayBuffer != null ? guideRidgeDelayBuffer.DelayedTexture : null;
 
         // ---------- 合成 ----------
         material.SetTexture("_BgLive", bgLiveTexture);
@@ -438,10 +548,18 @@ public class ChannelCompositor : MonoBehaviour
         material.SetFloat("_BoxSign", boxSign);
         material.SetFloat("_BoxDelta", boxDelta);
         material.SetFloat("_BoxColorBlend", DualColorActive ? 1f : 0f);
-        material.SetTexture("_GuideNow", boxOtherTexture != null ? boxOtherTexture : Texture2D.blackTexture);
-        material.SetTexture("_GuideDelayed", guideDelayedTexture != null ? guideDelayedTexture : Texture2D.blackTexture);
-        material.SetFloat("_GuideWeightNow", guideWeightNow);
-        material.SetFloat("_GuideWeightDelayed", guideWeightDelayed);
+        material.SetTexture("_GuideNearNow", guideNearNowTexture != null ? guideNearNowTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideNearDelayed", guideNearDelayedTexture != null ? guideNearDelayedTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideFarNow", guideFarNowTexture != null ? guideFarNowTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideFarDelayed", guideFarDelayedTexture != null ? guideFarDelayedTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideRidgeNow", guideRidgeNowTexture != null ? guideRidgeNowTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideRidgeDelayed", guideRidgeDelayedTexture != null ? guideRidgeDelayedTexture : Texture2D.blackTexture);
+        material.SetFloat("_GuideWeightNearNow", guideNearWeightNow);
+        material.SetFloat("_GuideWeightNearDelayed", guideNearWeightDelayed);
+        material.SetFloat("_GuideWeightFarNow", guideFarWeightNow);
+        material.SetFloat("_GuideWeightFarDelayed", guideFarWeightDelayed);
+        material.SetFloat("_GuideWeightRidgeNow", guideRidgeWeightNow);
+        material.SetFloat("_GuideWeightRidgeDelayed", guideRidgeWeightDelayed);
         material.SetFloat("_GuideSign", guideSign);
         material.SetFloat("_GuideDelta", guideDelta);
         Graphics.Blit(null, OutputTexture, material);
@@ -564,7 +682,11 @@ public class ChannelCompositor : MonoBehaviour
         GUI.Label(new Rect(Screen.width - 430, 10, 420, 20), "背景: " + bg);
         GUI.Label(new Rect(Screen.width - 430, 30, 420, 20),
             "箱: " + box + (DualColorActive ? "（別色モード）" : ""));
-        GUI.Label(new Rect(Screen.width - 430, 110, 420, 20), "ガイド(近い箱: 今⇔数百ms前): " + guide);
+        GUI.Label(new Rect(Screen.width - 430, 110, 420, 20),
+            "ガイド(今⇔数百ms前): " + guide
+            + " [近:" + (guideNearEnabled ? "ON" : "OFF")
+            + " 遠:" + (guideFarEnabled ? "ON" : "OFF")
+            + " 稜線:" + (guideRidgeEnabled ? "ON" : "OFF") + "]");
 
         // 別色モードを自動無効化した場合は目立つように出す（条件の取り違えを防ぐ）
         if (dualColorAutoDisabled)

@@ -159,10 +159,39 @@ public class ConeGuide : MonoBehaviour
     private Mesh mesh;
     private Material material;
 
+    // ---- 近断面/遠断面/稜線の分離（kind=Other のときだけ．09 §3.7 拡張） ----
+    // ガイドチャンネルが近い箱・遠い箱に独立した4ストロークを掛けられるよう，
+    // kind=Other のときは遠断面・稜線を別オブジェクト・別レイヤに分離する。
+    // kind=Self はガイドチャンネルの入力ではないため分離せず，従来どおり
+    // 1つのメッシュ（near バッファ）にまとめる
+    private GameObject farObject;
+    private GameObject ridgeObject;
+    private Mesh farMesh;
+    private Mesh ridgeMesh;
+
+    /// <summary>近断面・遠断面・稜線を3つの独立したオブジェクト・レイヤに分離するか</summary>
+    private bool Split { get { return kind == ConeKind.Other; } }
+
+    /// <summary>メッシュ組み立て用のバッファ（頂点・色・三角形インデックス）．使い回す</summary>
+    private sealed class MeshBuffer
+    {
+        public readonly List<Vector3> vertices = new List<Vector3>(512);
+        public readonly List<Color> colors = new List<Color>(512);
+        public readonly List<int> triangles = new List<int>(1024);
+
+        public void Clear()
+        {
+            vertices.Clear();
+            colors.Clear();
+            triangles.Clear();
+        }
+    }
+
     // ---- メッシュ組み立て用のバッファ（毎回確保しないよう使い回す） ----
-    private readonly List<Vector3> vertices = new List<Vector3>(512);
-    private readonly List<Color> colors = new List<Color>(512);
-    private readonly List<int> triangles = new List<int>(1024);
+    // Split=false（kind=Self）のときは far/ridge も near に書き込んで1つのメッシュにまとめる
+    private readonly MeshBuffer near = new MeshBuffer();
+    private readonly MeshBuffer far = new MeshBuffer();
+    private readonly MeshBuffer ridge = new MeshBuffer();
 
     /// <summary>形状パラメータの変更検知用（前回ビルド時の値）</summary>
     private GeometryKey lastKey;
@@ -325,12 +354,23 @@ public class ConeGuide : MonoBehaviour
     }
 
     /// <summary>
-    /// 種別に応じたレイヤを自分自身に設定する（子は持たない構成なので自分だけでよい）
+    /// 種別に応じたレイヤを自分自身（近断面）に設定する．Split のときは
+    /// 遠断面・稜線の子オブジェクトにもそれぞれ専用レイヤを設定する（09 §3.7 拡張）．
     /// </summary>
     private void ApplyLayer()
     {
         int layer = (kind == ConeKind.Other) ? ConeGuideLayers.OtherLayer : ConeGuideLayers.SelfLayer;
         if (gameObject.layer != layer) gameObject.layer = layer;
+
+        if (!Split) return;
+        if (farObject != null && farObject.layer != ConeGuideLayers.OtherFarLayer)
+        {
+            farObject.layer = ConeGuideLayers.OtherFarLayer;
+        }
+        if (ridgeObject != null && ridgeObject.layer != ConeGuideLayers.OtherRidgeLayer)
+        {
+            ridgeObject.layer = ConeGuideLayers.OtherRidgeLayer;
+        }
     }
 
     // ==================== メッシュ生成 ====================
@@ -368,12 +408,21 @@ public class ConeGuide : MonoBehaviour
     /// （並進・回転どちらの誤差にも反応しない）．誤差の手がかりは近断面だけが担う．
     /// d2 の値自体は見かけの角度に影響しない（方向だけで決まる）ので，線幅計算などは
     /// そのまま d2 を使い続けてよい．
+    ///
+    /// <see cref="Split"/> が true（kind=Other）のときは，最遠断面を <c>far</c>，
+    /// 稜線を <c>ridge</c>，それ以外（近断面）を <c>near</c> という3つの独立した
+    /// バッファに振り分け，それぞれ別の Mesh（<see cref="mesh"/> / <see cref="farMesh"/> /
+    /// <see cref="ridgeMesh"/>）・別オブジェクト・別レイヤに割り当てる．false（kind=Self）
+    /// のときは全部を <c>near</c> にまとめ，従来どおり1つのメッシュにする．
     /// </remarks>
     private void BuildMesh(Vector3 apexPos, Quaternion apexRot)
     {
-        vertices.Clear();
-        colors.Clear();
-        triangles.Clear();
+        bool split = Split;
+        near.Clear();
+        far.Clear();
+        ridge.Clear();
+        MeshBuffer farBuf = split ? far : near;
+        MeshBuffer ridgeBuf = split ? ridge : near;
 
         int n = Mathf.Clamp(sectionCount, 2, 4);
         float d1 = NearDistance;
@@ -393,10 +442,11 @@ public class ConeGuide : MonoBehaviour
             float half = d * tanHalfWidth;       // この断面での線の半太さ
             bool isFarthest = (i == n - 1);
             Vector3[] corner = Corners(d, d * tanAlpha, isFarthest ? farAnchor : FarAnchor.Identity);
+            MeshBuffer buf = isFarthest ? farBuf : near;
 
             for (int e = 0; e < 4; e++)
             {
-                AddSegment(corner[e], corner[(e + 1) % 4], half, half, c, c);
+                AddSegment(buf, corner[e], corner[(e + 1) % 4], half, half, c, c);
             }
         }
 
@@ -413,15 +463,26 @@ public class ConeGuide : MonoBehaviour
             for (int e = 0; e < 4; e++)
             {
                 // 頂点からの距離に比例して太らせ，見かけの太さを一定に保つ
-                AddSegment(a[e], b[e], dStart * tanHalfWidth, dN * tanHalfWidth, ca, cb);
+                AddSegment(ridgeBuf, a[e], b[e], dStart * tanHalfWidth, dN * tanHalfWidth, ca, cb);
             }
         }
 
-        mesh.Clear();
-        mesh.SetVertices(vertices);
-        mesh.SetColors(colors);
-        mesh.SetTriangles(triangles, 0);
-        mesh.RecalculateBounds();
+        ApplyBuffer(mesh, near);
+        if (split)
+        {
+            ApplyBuffer(farMesh, far);
+            ApplyBuffer(ridgeMesh, ridge);
+        }
+    }
+
+    /// <summary>組み立てたバッファの内容を Mesh へ反映する</summary>
+    private static void ApplyBuffer(Mesh target, MeshBuffer buffer)
+    {
+        target.Clear();
+        target.SetVertices(buffer.vertices);
+        target.SetColors(buffer.colors);
+        target.SetTriangles(buffer.triangles, 0);
+        target.RecalculateBounds();
     }
 
     /// <summary>
@@ -490,7 +551,7 @@ public class ConeGuide : MonoBehaviour
     /// <param name="halfB">終点側の半太さ[m]</param>
     /// <param name="colorA">始点側の色</param>
     /// <param name="colorB">終点側の色</param>
-    private void AddSegment(Vector3 a, Vector3 b, float halfA, float halfB, Color colorA, Color colorB)
+    private void AddSegment(MeshBuffer buf, Vector3 a, Vector3 b, float halfA, float halfB, Color colorA, Color colorB)
     {
         Vector3 dir = b - a;
         float length = dir.magnitude;
@@ -505,34 +566,34 @@ public class ConeGuide : MonoBehaviour
         // 断面の4隅（周方向の順）．半太さ h のとき一辺 2h の正方形になる
         Vector3[] offset = { u + v, u - v, -u - v, -u + v };
 
-        int baseIndex = vertices.Count;
+        int baseIndex = buf.vertices.Count;
         for (int k = 0; k < 4; k++)
         {
-            vertices.Add(a + offset[k] * halfA);
-            colors.Add(colorA);
+            buf.vertices.Add(a + offset[k] * halfA);
+            buf.colors.Add(colorA);
         }
         for (int k = 0; k < 4; k++)
         {
-            vertices.Add(b + offset[k] * halfB);
-            colors.Add(colorB);
+            buf.vertices.Add(b + offset[k] * halfB);
+            buf.colors.Add(colorB);
         }
 
         // 側面 4 枚
         for (int k = 0; k < 4; k++)
         {
             int k2 = (k + 1) % 4;
-            AddQuad(baseIndex + k, baseIndex + k2, baseIndex + 4 + k2, baseIndex + 4 + k);
+            AddQuad(buf, baseIndex + k, baseIndex + k2, baseIndex + 4 + k2, baseIndex + 4 + k);
         }
         // 端面 2 枚（線の端でも深度が正しく書かれるように閉じておく）
-        AddQuad(baseIndex + 3, baseIndex + 2, baseIndex + 1, baseIndex + 0);
-        AddQuad(baseIndex + 4, baseIndex + 5, baseIndex + 6, baseIndex + 7);
+        AddQuad(buf, baseIndex + 3, baseIndex + 2, baseIndex + 1, baseIndex + 0);
+        AddQuad(buf, baseIndex + 4, baseIndex + 5, baseIndex + 6, baseIndex + 7);
     }
 
     /// <summary>四角形（頂点4つ）を三角形2枚としてインデックスに追加する</summary>
-    private void AddQuad(int i0, int i1, int i2, int i3)
+    private static void AddQuad(MeshBuffer buf, int i0, int i1, int i2, int i3)
     {
-        triangles.Add(i0); triangles.Add(i1); triangles.Add(i2);
-        triangles.Add(i0); triangles.Add(i2); triangles.Add(i3);
+        buf.triangles.Add(i0); buf.triangles.Add(i1); buf.triangles.Add(i2);
+        buf.triangles.Add(i0); buf.triangles.Add(i2); buf.triangles.Add(i3);
     }
 
     // ==================== リソース管理 ====================
@@ -579,11 +640,70 @@ public class ConeGuide : MonoBehaviour
 
         // 色は頂点カラーで運ぶので，マテリアル側の tint は白のまま使う
         material.SetColor("_Color", Color.white);
+
+        if (Split)
+        {
+            EnsureSplitChild(ref farObject, ref farMesh, "ConeGuide_Far");
+            EnsureSplitChild(ref ridgeObject, ref ridgeMesh, "ConeGuide_Ridge");
+        }
+        else
+        {
+            ReleaseSplitChildren();
+        }
+
         return true;
+    }
+
+    /// <summary>
+    /// 遠断面／稜線を独立レイヤで描くための子オブジェクト（MeshFilter+MeshRenderer）を
+    /// 用意する．メイン（近断面）と同じマテリアルを共有し，シーンには保存しない．
+    /// </summary>
+    private void EnsureSplitChild(ref GameObject child, ref Mesh childMesh, string name)
+    {
+        if (child == null)
+        {
+            child = new GameObject(name)
+            {
+                hideFlags = HideFlags.DontSave | HideFlags.HideInHierarchy,
+            };
+            child.transform.SetParent(transform, false);
+            child.AddComponent<MeshFilter>();
+            var renderer = child.AddComponent<MeshRenderer>();
+            renderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
+            renderer.receiveShadows = false;
+            renderer.lightProbeUsage = UnityEngine.Rendering.LightProbeUsage.Off;
+            renderer.reflectionProbeUsage = UnityEngine.Rendering.ReflectionProbeUsage.Off;
+        }
+
+        if (childMesh == null)
+        {
+            childMesh = new Mesh
+            {
+                name = name + "Mesh",
+                hideFlags = HideFlags.DontSave,
+            };
+            child.GetComponent<MeshFilter>().sharedMesh = childMesh;
+            meshDirty = true;
+        }
+
+        child.GetComponent<MeshRenderer>().sharedMaterial = material;
+    }
+
+    private void ReleaseSplitChildren()
+    {
+        SafeDestroy(farMesh);
+        SafeDestroy(ridgeMesh);
+        farMesh = null;
+        ridgeMesh = null;
+        if (farObject != null) SafeDestroy(farObject);
+        if (ridgeObject != null) SafeDestroy(ridgeObject);
+        farObject = null;
+        ridgeObject = null;
     }
 
     private void ReleaseResources()
     {
+        ReleaseSplitChildren();
         SafeDestroy(mesh);
         SafeDestroy(material);
         mesh = null;

@@ -22,7 +22,7 @@ TagManager:
   - Barrier
   - left
   - right
-  - 
+  - ConeOtherFar
   - Laser
   - Controller
   - 
@@ -30,7 +30,7 @@ TagManager:
   - ConeOther
   - ConeSelf
   - ConeSelfRef
-  - 
+  - ConeOtherRidge
   - 
   - 
   - 

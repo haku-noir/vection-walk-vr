@@ -95,13 +95,23 @@
 |---|---|---|---|
 | `LiveBGCam`（既存 CenterEyeCapture） | ライブ頭部 | 環境のみ | `BG_Live` |
 | `GhostBGCam`（既存 GhostCamera） | 収録軌跡 | 環境のみ | `BG_Ghost` |
-| `LiveBoxCam`（新規） | ライブ頭部 | `ConeOther` のみ・透明クリア | `Box_Other` |
+| `LiveBoxCam`（新規） | ライブ頭部 | `ConeOther`+`ConeOtherFar`+`ConeOtherRidge`・透明クリア | `Box_Other` |
 | `GhostBoxCam`（新規） | 収録軌跡 | `ConeSelf` のみ・透明クリア | `Box_Self` |
+| `LiveBoxNearCam`（拡張 09 §3.7） | ライブ頭部 | `ConeOther`（近断面）のみ・透明クリア | `Box_Other_Near` |
+| `LiveBoxFarCam`（拡張 09 §3.7） | ライブ頭部 | `ConeOtherFar`（遠断面）のみ・透明クリア | `Box_Other_Far` |
+| `LiveBoxRidgeCam`（拡張 09 §3.7） | ライブ頭部 | `ConeOtherRidge`（稜線）のみ・透明クリア | `Box_Other_Ridge` |
 
-- `Cone_Other` は GhostCamera の姿勢に追従（Layer: `ConeOther`）
-- `Cone_Self` は CenterEyeAnchor の姿勢に追従（Layer: `ConeSelf`）
-- ガイド4ストロークチャンネル（§3.7）は新規カメラ・RT を必要としない。
-  `Box_Other` を `DelayedFrameBuffer` で複製した過去フレームを使うだけである
+- `Cone_Other` は GhostCamera の姿勢に追従。ガイドチャンネルが近断面・遠断面に独立して
+  4ストロークを掛けられるよう，内部で近断面（Layer: `ConeOther`）・遠断面
+  （Layer: `ConeOtherFar`）・稜線（Layer: `ConeOtherRidge`）の3オブジェクトに分離される
+  （拡張 09 §3.7。実体は1つの `ConeGuide` コンポーネントで，子オブジェクトへメッシュを
+  振り分けているだけ）
+- `Cone_Self` は CenterEyeAnchor の姿勢に追従（Layer: `ConeSelf`）。ガイドチャンネルの
+  入力ではないため分離しない
+- ガイド4ストロークチャンネル（§3.7）の入力は `Box_Other_Near` / `Box_Other_Far` /
+  `Box_Other_Ridge` を `DelayedFrameBuffer` でそれぞれ複製した過去フレームである。
+  近断面・遠断面・稜線は独立した ON/OFF スイッチ（`Guide Near/Far/Ridge Enabled`）を持ち，
+  すべて OFF なら稜線は常に静的な線のままになる（既定は稜線 OFF）
 - 断面は頂点から 1〜3 m 先にあるためニアクリップ問題は生じない
 - **箱カメラは独自の深度バッファを持つ**（環境を描画しないため）。錐の内部だけで
   ZWrite/ZTest が働き、稜線オクルージョン（§1.6）が成立する。合成時に箱 RT を背景の上に
@@ -241,7 +251,7 @@ M8 でこの方式は**廃止**し、§3.7 の「近い箱の今 vs 数百ms前�
 > ガイドチャンネル（§3.7）は常に輝度変調のみで別色モードを持たないため，この排他制御の
 > 対象外（箱チャンネルの色分け設定とは独立に動作する）。
 
-### 3.7 ガイド4ストロークチャンネル（近い箱: 今⇔数百ms前）
+### 3.7 ガイド4ストロークチャンネル（近断面・遠断面・稜線: 今⇔数百ms前）
 
 **経緯（M8 での方式変更）**: 当初（M8 初版）は「近い箱（`Cone_Other`）⇔ 的
 （`Cone_SelfRef`）」という2オブジェクト間の4ストロークとして実装した。しかし
@@ -256,35 +266,52 @@ M8 でこの方式は**廃止**し、§3.7 の「近い箱の今 vs 数百ms前�
 「今」と「数百ms前」の4ストローク**に書き換えた。`Cone_SelfRef` は不要になり削除した
 （§3.5）。
 
-**仕組み**: `Cone_Other`（近断面＋遠断面＋稜線，`Box_Other`）を
+**仕組み**: `Cone_Other` は近断面（`Box_Other_Near`）・遠断面（`Box_Other_Far`）・稜線
+（`Box_Other_Ridge`）の3つの独立したレイヤ・専用カメラ・RT に分離される。3つそれぞれを
 [`DelayedFrameBuffer`](../../Assets/scripts/ViewpointFollowing/FourStroke/DelayedFrameBuffer.cs)
 で一定レートでリングバッファへ複製し，数百ms前の状態を取り出す。ChannelPhase の
-輝度変調方式（§2.3 と同じ数式）は変えず，入力する2枚のマスクを「今の近い箱」
-「数百ms前の近い箱」に置き換えただけである。
+輝度変調方式（§2.3 と同じ数式）は変えず，入力するマスクを「今の部分」
+「数百ms前の部分」に置き換えただけである（拡張時点では近断面のみだったが，
+後に遠断面・稜線にも同じ仕組みを適用した）。
 
 | 入力 | 中身 | 作り方 |
 |---|---|---|
-| Guide_Now | `Box_Other` を再利用（近い箱の今） | 既存の `LiveBoxCam` |
-| Guide_Delayed | `Box_Other` の数百ms前 | `DelayedFrameBuffer`（`ChannelCompositor` と同じオブジェクトに配置） |
+| Guide_NearNow | 近断面の今 | `LiveBoxNearCam` → `Box_Other_Near` |
+| Guide_NearDelayed | 近断面の数百ms前 | `Box_Other_Near` を複製する `DelayedFrameBuffer`（近断面用） |
+| Guide_FarNow | 遠断面の今 | `LiveBoxFarCam` → `Box_Other_Far` |
+| Guide_FarDelayed | 遠断面の数百ms前 | `Box_Other_Far` を複製する `DelayedFrameBuffer`（遠断面用） |
+| Guide_RidgeNow | 稜線の今 | `LiveBoxRidgeCam` → `Box_Other_Ridge` |
+| Guide_RidgeDelayed | 稜線の数百ms前 | `Box_Other_Ridge` を複製する `DelayedFrameBuffer`（稜線用） |
+
+近断面・遠断面・稜線は**提示条件（モード・極性・周波数）を共有**し，`Guide Near Enabled` /
+`Guide Far Enabled` / `Guide Ridge Enabled` で**どこに掛けるかだけ独立に ON/OFF** できる
+（後述）。位相を共有するのは，ずれると3者の4ストロークが噛み合わず，かえって
+見えにくくなるため。稜線そのものの表示/非表示は既存の `ConeGuide.drawRidges` で
+別途 ON/OFF できる（ガイド効果の ON/OFF とは独立の機能。稜線自体を消せば当然
+稜線のガイド効果も出ない）。
 
 > **性質の違い（§3.7 旧方式との対比）**: 旧方式は「常に固定された的へ引き込む」信号
 > だったが、新方式は4ストローク歩行シーンの自己運動増強と同じ性質を持つ——**常に
 > 「今まさに起きている変化」を増強する**のであって、常に目標（誤差ゼロ）へ向かわせる
-> わけではない。被験者が実際に誤差を減らす方向に歩いていれば「今の近い箱」は
-> 「数百ms前の近い箱」より目標に近いはずなので、Enhance極性はその収束を後押しする。
+> わけではない。被験者が実際に誤差を減らす方向に歩いていれば「今の断面」は
+> 「数百ms前の断面」より目標に近いはずなので、Enhance極性はその収束を後押しする。
 > 逆に誤差が拡大している最中は、同じ仕組みが拡大方向を後押ししてしまう点に注意。
 
 | パラメータ | 既定値 | 内容 |
 |---|---|---|
-| `Guide Mode` | Off | `BoxMode` を流用（Off/OtherFixed=今固定/SelfFixed=数百ms前固定/矩形波交替/4ストローク） |
-| `Guide Polarity` | Zero | 4ストローク歩行シーンと同じ意味づけ：Enhance＝過去→現在の順で加速感／Reversal＝逆順で抵抗感／Zero＝統制 |
-| `Sync Guide Freq To Bg` / `Guide Frequency` | ON / 1.0Hz | f_box と同じ流儀（同期ON時は f_bg を使う） |
-| `Guide Delta` | 0.35 | 既存の箱の輝度変調量Δと同じ既定値 |
-| `DelayedFrameBuffer.delayFrames` / `captureFps` | 8 / 30fps ≈267ms | 4ストローク歩行シーンと同じ既定値 |
+| `Guide Mode` | Off | `BoxMode` を流用（Off/OtherFixed=今固定/SelfFixed=数百ms前固定/矩形波交替/4ストローク）。近断面・遠断面・稜線で共有 |
+| `Guide Polarity` | Zero | 4ストローク歩行シーンと同じ意味づけ：Enhance＝過去→現在の順で加速感／Reversal＝逆順で抵抗感／Zero＝統制。近断面・遠断面・稜線で共有 |
+| `Sync Guide Freq To Bg` / `Guide Frequency` | ON / 1.0Hz | f_box と同じ流儀（同期ON時は f_bg を使う）。近断面・遠断面・稜線で共有 |
+| `Guide Delta` | 0.35 | 既存の箱の輝度変調量Δと同じ既定値。近断面・遠断面・稜線で共有 |
+| `Guide Near Enabled`（拡張） | ON | 近断面にガイド効果を掛けるか。従来からの挙動を維持するため既定ON |
+| `Guide Far Enabled`（拡張） | OFF | 遠断面にガイド効果を掛けるか。新規追加の能力のため既定OFF（明示的に有効化するまで従来と同じ見え） |
+| `Guide Ridge Enabled`（拡張） | OFF | 稜線にガイド効果を掛けるか。新規追加の能力のため既定OFF |
+| `DelayedFrameBuffer.delayFrames` / `captureFps`（近断面用・遠断面用・稜線用それぞれ） | 8 / 30fps ≈267ms | 4ストローク歩行シーンと同じ既定値 |
 
 合成式（既存の箱と同じ輝度変調方式，`ChannelComposite.shader`）:
 
 ```
+guideMask = saturate(nearMask + farMask + ridgeMask)   // 各マスクは Enabled=OFFなら常に0
 final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
 ```
 
@@ -386,6 +413,8 @@ final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
 | M6 | 遠断面の無限遠モード（Observerの位置・向き基準の再アンカリングで完全固定，仕様外の拡張） | §3.4 |
 | M7 | 自分基準リファレンス（Cone_SelfRef）＋近/遠の色分けを既定化，仕様外の拡張（Cone_SelfRef は M8 で廃止） | §3.5 / §3.6 |
 | M8 | ガイド4ストロークチャンネルを箱チャンネルと独立に追加。当初は近い箱⇔的（Cone_SelfRef）で実装したが，理論的検証の結果「近い箱の今⇔数百ms前」（4ストローク歩行シーンと同じ方式）に作り直した，仕様外の拡張 | §3.7 |
+| M9 | ガイド4ストロークを遠断面にも適用。`Cone_Other` を近断面/遠断面/稜線の3レイヤに分離し，`Guide Near Enabled` / `Guide Far Enabled` で断面ごとに独立 ON/OFF できるようにした，仕様外の拡張 | §2.1 / §3.7 |
+| M10 | ガイド4ストロークを稜線にも適用。稜線用の専用カメラ・RT・`DelayedFrameBuffer` を追加し，`Guide Ridge Enabled` で独立 ON/OFF できるようにした，仕様外の拡張。稜線<b>表示</b>自体の ON/OFF は既存の `drawRidges` で対応済み（ガイド効果の ON/OFF とは別物） | §2.1 / §3.7 |
 
 ### 実装上の決定（仕様に明記が無く、実装側で決めた点）
 
@@ -420,12 +449,18 @@ final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
   文献の実証条件（密な画像・小さい変位）に近い「今 vs 数百ms前の自分」
   （4ストローク歩行シーンと同じ仕組み）に作り直し，`Cone_SelfRef` とその専用
   レイヤ・カメラ・RT・シェーダ（`Hidden/ConeLineOverlay`）は削除した
-- **ガイドの「今」入力は Box_Other を再利用**: `Cone_Other` 用に新しいマスクを
-  分離せず，既存の `Box_Other`（近断面＋遠断面＋稜線）をそのまま読む。「数百ms前」は
-  `DelayedFrameBuffer` が同じテクスチャから複製する。近断面のみを分離するメッシュ
-  改修は不要
 - **ガイドチャンネルは常に輝度変調のみ**: 箱チャンネルと違い別色モードの分岐を
   設けていない。4ストロークの原理（輝度相関を負にする）上，色分けとの併用意義が薄いため
+- **近断面/遠断面/稜線の分離方式（M9・M10）**: 当初はガイドの「今」入力に既存の
+  `Box_Other`（近断面＋遠断面＋稜線が1枚に混ざったRT）をそのまま再利用していたが，
+  断面・稜線それぞれに独立した4ストロークを掛けるには部分ごとに別マスクが要る。
+  `ConeGuide` 内部で近断面・遠断面・稜線を別々の `Mesh`（別オブジェクト・別レイヤ）に
+  振り分け，それぞれ専用カメラ（`LiveBoxNearCam` / `LiveBoxFarCam` / `LiveBoxRidgeCam`）・
+  専用RT（`Box_Other_Near` / `Box_Other_Far` / `Box_Other_Ridge`）・専用
+  `DelayedFrameBuffer` を持たせた。`Box_Other`（箱チャンネル用，近断面+遠断面+稜線の合成）
+  は `LiveBoxCam` の Culling Mask を3レイヤ分に広げることで従来と同じ見えを維持している。
+  `Cone_Self` は分離しない（`kind == ConeKind.Other` のときだけ分離する
+  `ConeGuide.Split` プロパティで判定）
 
 ### 未実装（仕様の未決事項に対応）
 

@@ -120,12 +120,17 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 このメニューは**既存シーンを作り直さず、足りない要素だけを差分で足す**（何度実行してもよい）。
 実行後、シーンは未保存状態になるので内容を確認して手動保存すること。追加されるもの:
 
-- レイヤ `ConeOther`(16) / `ConeSelf`(17) の登録と、既存カメラの Culling Mask からの除外
+- レイヤ `ConeOther`(16) / `ConeSelf`(17) / `ConeOtherFar`(18) / `ConeOtherRidge`(19) の登録と、
+  既存カメラの Culling Mask からの除外（`ConeOtherFar` / `ConeOtherRidge` は `Cone_Other` の
+  遠断面・稜線が内部で分離される先。09 §2.1 / §3.7 拡張）
 - `Cone_Other` / `Cone_Self`（各 `ConeGuide` + `ConePoseFilter`）
 - 箱用 RenderTexture（`BoxOther` / `BoxSelf`。アルファ付き・深度付き）と `LiveBoxCam` / `GhostBoxCam`
+- ガイドチャンネル用 RenderTexture（`BoxOtherNear` / `BoxOtherFar` / `BoxOtherRidge`）と、
+  それぞれを撮る専用カメラ `LiveBoxNearCam` / `LiveBoxFarCam` / `LiveBoxRidgeCam`（拡張 09 §3.7）
 - `ChannelCompositor`（`ViewSwitcher` と同じオブジェクトに追加。**既定は無効**）
-- `DelayedFrameBuffer`（`ChannelCompositor` と同じオブジェクトに追加。ガイドチャンネル用に
-  近い箱＝`Box_Other` を複製し、数百ms前の状態を取り出す。09 §3.7 参照）
+- `DelayedFrameBuffer` を3つ（`ChannelCompositor` と同じオブジェクトに追加。ガイドチャンネル用に
+  近断面＝`Box_Other_Near`、遠断面＝`Box_Other_Far`、稜線＝`Box_Other_Ridge` をそれぞれ複製し、
+  数百ms前の状態を取り出す。09 §3.7 参照）
 
 主なパラメータ（既定値は 09 §3.1 / §3.2 / §3.4 / §3.6–3.7 のとおり）:
 
@@ -137,8 +142,17 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 | `Cone_*` > ConePoseFilter | ヨー / ピッチ / ロール | Raw / LowPass 0.5Hz / Zero |
 | ExperimentRig > ChannelCompositor | 背景チャンネル / 箱チャンネル / ガイドチャンネル | 矩形波交替 / Off / Off |
 | 〃 | f_box の f_bg 同期 / 輝度変調量 Δ（箱・ガイド共通の既定値） | ON / 0.35 |
-| ExperimentRig > DelayedFrameBuffer | delayFrames / captureFps | 8 / 30fps（≈267ms） |
+| 〃 | Guide Near Enabled / Guide Far Enabled / Guide Ridge Enabled（拡張 09 §3.7） | ON / OFF / OFF |
+| ExperimentRig > DelayedFrameBuffer（近断面用・遠断面用・稜線用それぞれ） | delayFrames / captureFps | 8 / 30fps（≈267ms） |
 | ExperimentRig > FollowingExperimentManager | 初期オフセット（横 / 前後 / ヨー） | 0m / 0m / 0° |
+
+> **近断面/遠断面/稜線それぞれの4ストローク ON/OFF**は `ChannelCompositor > Guide Near
+> Enabled` / `Guide Far Enabled` / `Guide Ridge Enabled` で独立に切り替えられる
+> （09 §3.7 拡張）。提示条件（モード・極性・周波数）は共有するが，実際にどこに効果を
+> 掛けるかはこのチェックで決まる。
+> **稜線<b>表示</b>自体の ON/OFF** は `Cone_Other`（`Mirror From` 経由で `Cone_Self` にも
+> 同期）の `Draw Ridges` で切り替える。これはガイド効果の ON/OFF とは別の機能で，
+> 稜線を非表示にすればガイド効果も当然出ない。
 
 > **2つの錐のパラメータは自動同期される。** `Cone_Self > ConeGuide > Mirror From` に
 > `Cone_Other` が設定されており、幾何・見た目（d₁ / d₂ / α / 断面枚数 / 線幅 / 線の色 /
@@ -269,7 +283,8 @@ errLat, errFwd, errYaw           ← 誤差の成分分解（コース進行方�
 | `FourStroke/DelayedFrameBuffer.cs` | ライブ映像のリングバッファ（4ストローク歩行シーン用の過去映像） |
 | `FourStroke/FourStrokeSelfManager.cs` | 4ストローク歩行シーンの進行管理 |
 | `Editor/ViewpointFollowingSceneBuilder.cs` | 実験シーンの自動構築（メニュー: Tools > 視点追従実験） |
-| `ConeGuide/ConeGuide.cs` | 四角錐ガイドの生成と追従（断面枠＋側稜を太さのある3Dジオメトリで描く） |
+| `ConeGuide/ConeGuide.cs` | 四角錐ガイドの生成と追従（断面枠＋側稜を太さのある3Dジオメトリで描く）。`kind=Other` は内部で近断面/遠断面/稜線を別オブジェクト・別レイヤに分離する（拡張 09 §3.7） |
+| `ConeGuide/ConeGuideLayers.cs` | 錐ガイドが使うレイヤ名・レイヤ番号の一元管理（`ConeOther` / `ConeSelf` / `ConeOtherFar` / `ConeOtherRidge`） |
 | `ConeGuide/ConeLine.shader` | 錐の線（ZWrite On / ZTest LEqual で稜線オクルージョンを成立させる） |
 | `ConeGuide/ConePoseFilter.cs` | 箱の姿勢処理（ヨー/ピッチ/ロールを Raw / LowPass / Zero） |
 | `ConeGuide/ChannelPhase.cs` | 1チャンネル分の位相計算（矩形波 / 4ストローク）。背景用・箱用に独立適用 |
@@ -294,16 +309,25 @@ errLat, errFwd, errYaw           ← 誤差の成分分解（コース進行方�
                                               ├─(ChannelCompositor)─→ CenterRawImage → HMD
 [箱ch]   LiveBoxCam ───────→ BoxOther RT ─────┤   背景・箱・ガイドを独立に選択・合成
          GhostBoxCam ──────→ BoxSelf RT ──────┤
-[ガイドch]                 BoxOther RT ───────┤   （箱chと同じRTを再利用）
-         DelayedFrameBuffer(BoxOther) ────────┘   （数百ms前の複製）
+[ガイドch] LiveBoxNearCam ─→ BoxOtherNear RT ─┤
+         LiveBoxFarCam ───→ BoxOtherFar RT ──┤
+         LiveBoxRidgeCam ─→ BoxOtherRidge RT ┤
+         DelayedFrameBuffer(BoxOtherNear) ───┤   （近断面の数百ms前の複製）
+         DelayedFrameBuffer(BoxOtherFar) ────┤   （遠断面の数百ms前の複製）
+         DelayedFrameBuffer(BoxOtherRidge) ──┘   （稜線の数百ms前の複製）
 ```
 
-- `LiveBoxCam` / `GhostBoxCam` は各背景カメラの**子**（姿勢・投影が完全一致）。
-  Culling Mask はそれぞれ `ConeOther` / `ConeSelf` のみ、背景は透明クリア
+- `LiveBoxCam` / `GhostBoxCam` / `LiveBoxNearCam` / `LiveBoxFarCam` / `LiveBoxRidgeCam` は
+  各背景カメラの**子**（姿勢・投影が完全一致）。Culling Mask はそれぞれ
+  `ConeOther`+`ConeOtherFar`+`ConeOtherRidge` / `ConeSelf` / `ConeOther`のみ /
+  `ConeOtherFar`のみ / `ConeOtherRidge`のみで、背景は透明クリア
 - `Cone_Other`（頂点＝収録視点）はライブ映像側にのみ、
-  `Cone_Self`（頂点＝ライブ頭部）は収録映像側にのみ映る
-- ガイドチャンネル（近い箱の今⇔数百ms前）は新規カメラ・RT を必要とせず、
-  `Box_Other` を `DelayedFrameBuffer` で複製するだけで成立する（09 §3.7）
+  `Cone_Self`（頂点＝ライブ頭部）は収録映像側にのみ映る。`Cone_Other` は内部で
+  近断面（`ConeOther`）・遠断面（`ConeOtherFar`）・稜線（`ConeOtherRidge`）の
+  3レイヤに分離される（拡張 09 §3.7）
+- ガイドチャンネル（近断面・遠断面・稜線それぞれの今⇔数百ms前）は、部分ごとの
+  専用カメラ・RT・`DelayedFrameBuffer` を使う。`Guide Near/Far/Ridge Enabled` で
+  どこに掛けるかを独立に ON/OFF できる（既定は近断面のみON。09 §3.7）
 - 箱・ガイドとも下地に対する**輝度変調**として重なる（`final = BG + boxMask × sign × Δ + guideMask × sign × Δ`）
 - **錐ガイドがオフの間は `ChannelCompositor` が無効化され、上の従来経路がそのまま動く**
 

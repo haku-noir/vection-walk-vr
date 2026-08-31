@@ -3,13 +3,16 @@
 // 背景・箱・ガイドの3チャンネルを独立に合成して1枚に出す:
 //   BG_Live / BG_Ghost     … 環境のみを描いた背景（アルファ不使用）
 //   Box_Other / Box_Self   … 錐のみを描いた透明背景のRT（アルファ = 箱マスク）
-//   Guide_Now / Guide_Delayed … 近い箱(Cone_Other)の「今」/「数百ms前」のみを描いた
-//                                 透明背景のRT（アルファ = ガイドマスク）。
-//                                 Guide_Now は Box_Other をそのまま再利用し，
-//                                 Guide_Delayed は DelayedFrameBuffer が同じ
-//                                 テクスチャから複製した過去フレーム
-//                                 （4ストローク歩行シーンと同じ「今 vs 過去の自分」の
-//                                 仕組みを近い箱に適用したもの。09 §3.7）
+//   Guide_NearNow / Guide_NearDelayed … 近断面のみの「今」/「数百ms前」
+//   Guide_FarNow / Guide_FarDelayed   … 遠断面のみの「今」/「数百ms前」
+//   Guide_RidgeNow / Guide_RidgeDelayed … 稜線のみの「今」/「数百ms前」
+//                                 （いずれも透明背景のRT，アルファ = ガイドマスク。
+//                                 *Now は専用カメラの実況テクスチャをそのまま再利用し，
+//                                 *Delayed は DelayedFrameBuffer が同じテクスチャから
+//                                 複製した過去フレーム。4ストローク歩行シーンと同じ
+//                                 「今 vs 過去の自分」の仕組みを近断面・遠断面・稜線
+//                                 それぞれに適用したもの。3者は独立した重みを持つため，
+//                                 任意の組合せで ON/OFF できる。09 §3.7 拡張）
 //
 // 背景は既存 FourStroke.shader と同じ扱い（グレースケール化・中間グレー軸の輝度反転・
 // 台形波クロスフェード）。矩形波交替は重みが 1/0 になるだけの特殊ケースとして同じ式で処理する。
@@ -36,8 +39,12 @@ Shader "Hidden/ChannelComposite"
         _BgGhost ("BG Ghost", 2D) = "black" {}
         _BoxOther ("Box Other", 2D) = "black" {}
         _BoxSelf ("Box Self", 2D) = "black" {}
-        _GuideNow ("Guide Now", 2D) = "black" {}
-        _GuideDelayed ("Guide Delayed", 2D) = "black" {}
+        _GuideNearNow ("Guide Near Now", 2D) = "black" {}
+        _GuideNearDelayed ("Guide Near Delayed", 2D) = "black" {}
+        _GuideFarNow ("Guide Far Now", 2D) = "black" {}
+        _GuideFarDelayed ("Guide Far Delayed", 2D) = "black" {}
+        _GuideRidgeNow ("Guide Ridge Now", 2D) = "black" {}
+        _GuideRidgeDelayed ("Guide Ridge Delayed", 2D) = "black" {}
 
         _BgWeightLive ("BG Weight Live", Range(0, 1)) = 1
         _BgWeightGhost ("BG Weight Ghost", Range(0, 1)) = 0
@@ -50,8 +57,12 @@ Shader "Hidden/ChannelComposite"
         _BoxDelta ("Box Luminance Delta", Range(0, 1)) = 0.35
         _BoxColorBlend ("Box Color Blend (0/1)", Float) = 0
 
-        _GuideWeightNow ("Guide Weight Now", Range(0, 1)) = 0
-        _GuideWeightDelayed ("Guide Weight Delayed", Range(0, 1)) = 0
+        _GuideWeightNearNow ("Guide Weight Near Now", Range(0, 1)) = 0
+        _GuideWeightNearDelayed ("Guide Weight Near Delayed", Range(0, 1)) = 0
+        _GuideWeightFarNow ("Guide Weight Far Now", Range(0, 1)) = 0
+        _GuideWeightFarDelayed ("Guide Weight Far Delayed", Range(0, 1)) = 0
+        _GuideWeightRidgeNow ("Guide Weight Ridge Now", Range(0, 1)) = 0
+        _GuideWeightRidgeDelayed ("Guide Weight Ridge Delayed", Range(0, 1)) = 0
         _GuideSign ("Guide Sign (+1/-1)", Float) = 1
         _GuideDelta ("Guide Luminance Delta", Range(0, 1)) = 0.35
     }
@@ -71,8 +82,12 @@ Shader "Hidden/ChannelComposite"
             sampler2D _BgGhost;
             sampler2D _BoxOther;
             sampler2D _BoxSelf;
-            sampler2D _GuideNow;
-            sampler2D _GuideDelayed;
+            sampler2D _GuideNearNow;
+            sampler2D _GuideNearDelayed;
+            sampler2D _GuideFarNow;
+            sampler2D _GuideFarDelayed;
+            sampler2D _GuideRidgeNow;
+            sampler2D _GuideRidgeDelayed;
 
             float _BgWeightLive;
             float _BgWeightGhost;
@@ -85,8 +100,12 @@ Shader "Hidden/ChannelComposite"
             float _BoxDelta;
             float _BoxColorBlend;
 
-            float _GuideWeightNow;
-            float _GuideWeightDelayed;
+            float _GuideWeightNearNow;
+            float _GuideWeightNearDelayed;
+            float _GuideWeightFarNow;
+            float _GuideWeightFarDelayed;
+            float _GuideWeightRidgeNow;
+            float _GuideWeightRidgeDelayed;
             float _GuideSign;
             float _GuideDelta;
 
@@ -156,13 +175,26 @@ Shader "Hidden/ChannelComposite"
                     result = bg + mask * _BoxSign * _BoxDelta;
                 }
 
-                // ---------- ガイドチャンネル（近い箱: 今 ⇔ 数百ms前, 拡張 09 §3.7） ----------
-                // 箱チャンネルとは独立した加算項。常に輝度変調のみ（別色モードは無い）
-                fixed4 guideNow = tex2D(_GuideNow, i.uv);
-                fixed4 guideDelayed = tex2D(_GuideDelayed, i.uv);
-                float guideMaskNow = guideNow.a * _GuideWeightNow;
-                float guideMaskDelayed = guideDelayed.a * _GuideWeightDelayed;
-                float guideMask = saturate(guideMaskNow + guideMaskDelayed);
+                // ---------- ガイドチャンネル（近断面・遠断面・稜線: 今 ⇔ 数百ms前, 拡張 09 §3.7） ----------
+                // 箱チャンネルとは独立した加算項。常に輝度変調のみ（別色モードは無い）。
+                // 近断面・遠断面・稜線は独立したマスクとして計算し，合算して1つの加算項にする
+                // （任意の組合せだけ ON にすれば，その部分だけに4ストロークが掛かる）
+                fixed4 guideNearNow = tex2D(_GuideNearNow, i.uv);
+                fixed4 guideNearDelayed = tex2D(_GuideNearDelayed, i.uv);
+                float guideNearMask = saturate(guideNearNow.a * _GuideWeightNearNow
+                    + guideNearDelayed.a * _GuideWeightNearDelayed);
+
+                fixed4 guideFarNow = tex2D(_GuideFarNow, i.uv);
+                fixed4 guideFarDelayed = tex2D(_GuideFarDelayed, i.uv);
+                float guideFarMask = saturate(guideFarNow.a * _GuideWeightFarNow
+                    + guideFarDelayed.a * _GuideWeightFarDelayed);
+
+                fixed4 guideRidgeNow = tex2D(_GuideRidgeNow, i.uv);
+                fixed4 guideRidgeDelayed = tex2D(_GuideRidgeDelayed, i.uv);
+                float guideRidgeMask = saturate(guideRidgeNow.a * _GuideWeightRidgeNow
+                    + guideRidgeDelayed.a * _GuideWeightRidgeDelayed);
+
+                float guideMask = saturate(guideNearMask + guideFarMask + guideRidgeMask);
                 result += guideMask * _GuideSign * _GuideDelta;
 
                 return fixed4(saturate(result), 1.0);

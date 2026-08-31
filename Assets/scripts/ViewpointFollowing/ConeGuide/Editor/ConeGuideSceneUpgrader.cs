@@ -44,11 +44,22 @@ public static class ConeGuideSceneUpgrader
     private const string BoxOtherRTPath = "Assets/Textures/BoxOther.renderTexture";
     private const string BoxSelfRTPath = "Assets/Textures/BoxSelf.renderTexture";
 
+    /// <summary>ガイドチャンネル用: Cone_Other 近断面のみを撮る RT（09 §3.7 拡張）</summary>
+    private const string BoxOtherNearRTPath = "Assets/Textures/BoxOtherNear.renderTexture";
+    /// <summary>ガイドチャンネル用: Cone_Other 遠断面のみを撮る RT（09 §3.7 拡張）</summary>
+    private const string BoxOtherFarRTPath = "Assets/Textures/BoxOtherFar.renderTexture";
+    /// <summary>ガイドチャンネル用: Cone_Other 稜線のみを撮る RT（09 §3.7 拡張）</summary>
+    private const string BoxOtherRidgeRTPath = "Assets/Textures/BoxOtherRidge.renderTexture";
+
     private const string LiveBoxCamName = "LiveBoxCam";
     private const string GhostBoxCamName = "GhostBoxCam";
+    private const string LiveBoxNearCamName = "LiveBoxNearCam";
+    private const string LiveBoxFarCamName = "LiveBoxFarCam";
+    private const string LiveBoxRidgeCamName = "LiveBoxRidgeCam";
 
     /// <summary>箱カメラの名前（M2 で追加．Culling Mask の除外対象から外すために使う）</summary>
-    private static readonly string[] BoxCameraNames = { "LiveBoxCam", "GhostBoxCam" };
+    private static readonly string[] BoxCameraNames =
+        { "LiveBoxCam", "GhostBoxCam", "LiveBoxNearCam", "LiveBoxFarCam", "LiveBoxRidgeCam" };
 
     /// <summary>ライブ視点のカメラ／頭部アンカーの候補名（実験シーン / 再生確認シーン）</summary>
     private static readonly string[] LiveAnchorNames = { "CenterEyeAnchor", "LiveReplayCamera" };
@@ -69,7 +80,10 @@ public static class ConeGuideSceneUpgrader
         // --- 1. レイヤを登録する ---
         int otherLayer = EnsureLayer(ConeGuideLayers.ConeOtherName, ConeGuideLayers.ConeOtherIndex);
         int selfLayer = EnsureLayer(ConeGuideLayers.ConeSelfName, ConeGuideLayers.ConeSelfIndex);
-        if (otherLayer < 0 || selfLayer < 0)
+        // Cone_Other は近断面/遠断面/稜線の3レイヤに分割される（09 §3.7 拡張）
+        int otherFarLayer = EnsureLayer(ConeGuideLayers.ConeOtherFarName, ConeGuideLayers.ConeOtherFarIndex);
+        int otherRidgeLayer = EnsureLayer(ConeGuideLayers.ConeOtherRidgeName, ConeGuideLayers.ConeOtherRidgeIndex);
+        if (otherLayer < 0 || selfLayer < 0 || otherFarLayer < 0 || otherRidgeLayer < 0)
         {
             EditorUtility.DisplayDialog("エラー",
                 "レイヤの空きが足りません。ProjectSettings > Tags and Layers を確認してください。", "OK");
@@ -121,7 +135,12 @@ public static class ConeGuideSceneUpgrader
         // --- 4. 箱用 RenderTexture（アルファ付き・深度付き）を用意する ---
         RenderTexture boxOtherRT = EnsureBoxRenderTexture(BoxOtherRTPath);
         RenderTexture boxSelfRT = EnsureBoxRenderTexture(BoxSelfRTPath);
-        if (boxOtherRT == null || boxSelfRT == null)
+        // ガイドチャンネル用: 近断面のみ／遠断面のみ／稜線のみを個別に撮る RT（09 §3.7 拡張）
+        RenderTexture boxOtherNearRT = EnsureBoxRenderTexture(BoxOtherNearRTPath);
+        RenderTexture boxOtherFarRT = EnsureBoxRenderTexture(BoxOtherFarRTPath);
+        RenderTexture boxOtherRidgeRT = EnsureBoxRenderTexture(BoxOtherRidgeRTPath);
+        if (boxOtherRT == null || boxSelfRT == null || boxOtherNearRT == null
+            || boxOtherFarRT == null || boxOtherRidgeRT == null)
         {
             EditorUtility.DisplayDialog("エラー",
                 "箱用 RenderTexture を用意できませんでした。\n複製元: " + LiveRTPath, "OK");
@@ -138,8 +157,15 @@ public static class ConeGuideSceneUpgrader
                 + "収録: GhostCamera / GhostReplayCamera）。", "OK");
             return;
         }
-        Camera liveBoxCam = EnsureBoxCamera(scene, LiveBoxCamName, liveBgCam, otherLayer, boxOtherRT);
-        Camera ghostBoxCam = EnsureBoxCamera(scene, GhostBoxCamName, ghostBgCam, selfLayer, boxSelfRT);
+        // LiveBoxCam（箱チャンネル用）は Cone_Other 全体（近断面+遠断面+稜線）を映す。
+        // 分割前と見えを変えないための後方互換マスク
+        int otherFullMask = (1 << otherLayer) | (1 << otherFarLayer) | (1 << otherRidgeLayer);
+        Camera liveBoxCam = EnsureBoxCamera(scene, LiveBoxCamName, liveBgCam, otherFullMask, boxOtherRT);
+        Camera ghostBoxCam = EnsureBoxCamera(scene, GhostBoxCamName, ghostBgCam, 1 << selfLayer, boxSelfRT);
+        // ガイドチャンネル用: 近断面のみ／遠断面のみ／稜線のみを個別に撮る専用カメラ（09 §3.7 拡張）
+        Camera liveBoxNearCam = EnsureBoxCamera(scene, LiveBoxNearCamName, liveBgCam, 1 << otherLayer, boxOtherNearRT);
+        Camera liveBoxFarCam = EnsureBoxCamera(scene, LiveBoxFarCamName, liveBgCam, 1 << otherFarLayer, boxOtherFarRT);
+        Camera liveBoxRidgeCam = EnsureBoxCamera(scene, LiveBoxRidgeCamName, liveBgCam, 1 << otherRidgeLayer, boxOtherRidgeRT);
 
         // --- 5.5. Far At Infinity 用の Observer（この錐を実際に描画するカメラ）を配線する ---
         // Cone_Other はライブ視野（LiveBoxCam）に，Cone_Self は収録視野（GhostBoxCam）に描かれる
@@ -148,10 +174,11 @@ public static class ConeGuideSceneUpgrader
 
         // --- 6. ChannelCompositor を用意して配線する（既定は無効） ---
         string compositorNote = EnsureCompositor(scene, coneOther, coneSelf,
-            boxOtherRT, boxSelfRT, liveBoxCam, ghostBoxCam);
+            boxOtherRT, boxSelfRT, boxOtherNearRT, boxOtherFarRT, boxOtherRidgeRT,
+            liveBoxCam, ghostBoxCam, liveBoxNearCam, liveBoxFarCam, liveBoxRidgeCam);
 
-        // --- 7. 既存カメラの Culling Mask から両レイヤを除外する ---
-        int excluded = ExcludeConeLayersFromExistingCameras(scene, otherLayer, selfLayer);
+        // --- 7. 既存カメラの Culling Mask から全レイヤを除外する ---
+        int excluded = ExcludeConeLayersFromExistingCameras(scene);
 
         EditorSceneManager.MarkSceneDirty(scene);
         Selection.activeGameObject = coneOther.gameObject;
@@ -159,8 +186,12 @@ public static class ConeGuideSceneUpgrader
         EditorUtility.DisplayDialog("錐ガイドを追加しました",
             "シーン: " + scene.name + "\n\n" +
             "レイヤ: " + ConeGuideLayers.ConeOtherName + " (" + otherLayer + ") / "
-            + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ")\n" +
-            "Cone_Other → " + ghostAnchor.name + " に追従（" + LiveBoxCamName + " が撮影）\n" +
+            + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ") / "
+            + ConeGuideLayers.ConeOtherFarName + " (" + otherFarLayer + ") / "
+            + ConeGuideLayers.ConeOtherRidgeName + " (" + otherRidgeLayer + ")\n" +
+            "Cone_Other → " + ghostAnchor.name + " に追従（" + LiveBoxCamName + " が箱全体を、"
+            + LiveBoxNearCamName + " / " + LiveBoxFarCamName + " / " + LiveBoxRidgeCamName
+            + " がガイド用に近断面/遠断面/稜線を個別に撮影）\n" +
             "Cone_Self  → " + liveAnchor.name + " に追従（" + GhostBoxCamName + " が撮影）\n" +
             "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n" +
             compositorNote + "\n\n" +
@@ -169,10 +200,14 @@ public static class ConeGuideSceneUpgrader
             "背景モード・箱モード・ガイドモード・極性・周波数は Inspector で切り替えられます。\n\n" +
             "【遠断面の無限遠モード】各 Cone の Inspector で Far At Infinity をONにすると，\n" +
             "遠断面が並進誤差では動かなくなります（Observer は自動配線済み）。\n\n" +
-            "【ガイド4ストローク】近い箱（Cone_Other，今）と、その数百ms前の状態\n" +
+            "【ガイド4ストローク】近断面・遠断面それぞれの「今」と、その数百ms前の状態\n" +
             "（DelayedFrameBuffer で遅延複製）の間に4ストロークを掛けられます。\n" +
-            "4ストローク歩行シーンと同じ「今 vs 数百ms前」の仕組みを近い箱に適用したもので、\n" +
-            "Guide Mode を FourStroke にすると有効になります（箱チャンネルとは完全に独立）。\n\n" +
+            "4ストローク歩行シーンと同じ「今 vs 数百ms前」の仕組みを箱に適用したもので、\n" +
+            "Guide Mode を FourStroke にすると有効になります（箱チャンネルとは完全に独立）。\n" +
+            "Guide Near Enabled / Guide Far Enabled / Guide Ridge Enabled で近断面・遠断面・\n" +
+            "稜線のどれに掛けるかを独立に ON/OFF できます（既定: 近断面ON・遠断面OFF・稜線OFF）。\n" +
+            "稜線自体の表示/非表示は各 Cone の Draw Ridges で切り替えられます\n" +
+            "（これはガイド効果のON/OFFとは別で、稜線を消せば当然ガイド効果も出ません）。\n\n" +
             "【近/遠の色分け】Cone_Other / Cone_Self の Dual Color Mode を有効化しました\n" +
             "（近断面=シアン／遠断面=マゼンタ）。箱の4ストロークは輝度変調方式のため、\n" +
             "箱チャンネルを4ストロークにすると自動的に無効化されます（警告ログが出ます）。\n\n" +
@@ -393,10 +428,10 @@ public static class ConeGuideSceneUpgrader
     /// <summary>
     /// 箱カメラを用意する．背景カメラの<b>子</b>として localPosition=0 / localRotation=identity で
     /// 置くことで，姿勢が常に背景カメラと完全一致する（仕様 §2.1）．
-    /// 該当レイヤだけを描き，背景を透明でクリアする．
+    /// 指定した Culling Mask のレイヤだけを描き，背景を透明でクリアする．
     /// </summary>
     private static Camera EnsureBoxCamera(Scene scene, string cameraName, Camera source,
-        int layer, RenderTexture target)
+        int cullingMask, RenderTexture target)
     {
         Transform existing = FindFirst(scene, new[] { cameraName });
         GameObject go;
@@ -417,7 +452,7 @@ public static class ConeGuideSceneUpgrader
 
         Undo.RecordObject(cam, "Configure " + cameraName);
         cam.CopyFrom(source);                              // FOV・near/far・投影を背景カメラに合わせる
-        cam.cullingMask = 1 << layer;                      // その錐だけを描く
+        cam.cullingMask = cullingMask;                      // 指定レイヤだけを描く
         cam.clearFlags = CameraClearFlags.SolidColor;
         cam.backgroundColor = new Color(0f, 0f, 0f, 0f);   // 透明クリア（アルファ0＝箱がない場所）
         cam.targetTexture = target;
@@ -439,7 +474,7 @@ public static class ConeGuideSceneUpgrader
 
         EditorUtility.SetDirty(cam);
         Debug.Log("[ConeGuideSceneUpgrader] " + cameraName + (existing != null ? " を更新" : " を作成")
-            + "しました（親: " + source.name + ", レイヤ: " + layer + ", 出力: " + target.name + "）");
+            + "しました（親: " + source.name + ", Culling Mask: " + cullingMask + ", 出力: " + target.name + "）");
         return cam;
     }
 
@@ -450,7 +485,9 @@ public static class ConeGuideSceneUpgrader
     /// </summary>
     /// <returns>ダイアログに出す1行の結果メッセージ</returns>
     private static string EnsureCompositor(Scene scene, ConeGuide coneOther, ConeGuide coneSelf,
-        RenderTexture boxOtherRT, RenderTexture boxSelfRT, Camera liveBoxCam, Camera ghostBoxCam)
+        RenderTexture boxOtherRT, RenderTexture boxSelfRT,
+        RenderTexture boxOtherNearRT, RenderTexture boxOtherFarRT, RenderTexture boxOtherRidgeRT,
+        Camera liveBoxCam, Camera ghostBoxCam, Camera liveBoxNearCam, Camera liveBoxFarCam, Camera liveBoxRidgeCam)
     {
         List<ViewSwitcher> switchers = CollectComponents<ViewSwitcher>(scene);
         if (switchers.Count == 0)
@@ -478,20 +515,28 @@ public static class ConeGuideSceneUpgrader
         compositor.bgGhostTexture = switcher.playbackTexture;
         compositor.boxOtherTexture = boxOtherRT;
         compositor.boxSelfTexture = boxSelfRT;
+        compositor.guideNearNowTexture = boxOtherNearRT;
+        compositor.guideFarNowTexture = boxOtherFarRT;
+        compositor.guideRidgeNowTexture = boxOtherRidgeRT;
         compositor.coneOther = coneOther;
         compositor.coneSelf = coneSelf;
         compositor.liveBoxCamera = liveBoxCam;
         compositor.ghostBoxCamera = ghostBoxCam;
+        compositor.guideNearCamera = liveBoxNearCam;
+        compositor.guideFarCamera = liveBoxFarCam;
+        compositor.guideRidgeCamera = liveBoxRidgeCam;
         if (compositor.shader == null)
         {
             compositor.shader = AssetDatabase.LoadAssetAtPath<Shader>(ChannelCompositeShaderPath);
         }
 
-        // ガイドチャンネル: 近い箱（Box_Other）を一定レートでリングバッファへ複製し，
-        // 数百ms前の「近い箱」を取り出せるようにする（4ストローク歩行シーンの
-        // DelayedFrameBuffer をそのまま流用。既定 8フレーム@30fps ≈267ms）
-        DelayedFrameBuffer guideDelayBuffer = EnsureGuideDelayBuffer(host, boxOtherRT);
-        compositor.guideDelayBuffer = guideDelayBuffer;
+        // ガイドチャンネル: 近断面・遠断面・稜線それぞれの専用テクスチャを一定レートで
+        // リングバッファへ複製し，数百ms前の状態を取り出せるようにする（4ストローク歩行シーンの
+        // DelayedFrameBuffer をそのまま流用。既定 8フレーム@30fps ≈267ms。09 §3.7 拡張）
+        var claimedBuffers = new HashSet<DelayedFrameBuffer>();
+        compositor.guideNearDelayBuffer = EnsureDelayBuffer(host, boxOtherNearRT, "近断面", claimedBuffers);
+        compositor.guideFarDelayBuffer = EnsureDelayBuffer(host, boxOtherFarRT, "遠断面", claimedBuffers);
+        compositor.guideRidgeDelayBuffer = EnsureDelayBuffer(host, boxOtherRidgeRT, "稜線", claimedBuffers);
 
         EditorUtility.SetDirty(compositor);
 
@@ -537,35 +582,58 @@ public static class ConeGuideSceneUpgrader
     }
 
     /// <summary>
-    /// ガイドチャンネル用の遅延バッファを用意する．近い箱（Box_Other）を一定レートで
-    /// リングバッファへ複製し，数百ms前の「近い箱」を取り出せるようにする．
+    /// ガイドチャンネル用の遅延バッファを用意する．指定したソーステクスチャ（近断面/遠断面/稜線の
+    /// 専用RT）を一定レートでリングバッファへ複製し，数百ms前の状態を取り出せるようにする．
     /// 4ストローク歩行シーンで自分の過去映像を扱う DelayedFrameBuffer をそのまま流用する
     /// （既定 8フレーム@30fps ≈267ms。値自体はユーザーが Inspector で調整済みなら壊さない）．
+    ///
+    /// host には近断面用・遠断面用・稜線用の3つの DelayedFrameBuffer が同居するため，
+    /// <paramref name="claimed"/> でこの呼び出し内ですでに割り当て済みのコンポーネントを除外しつつ，
+    /// sourceTexture が一致する既存コンポーネントを優先的に再利用する（冪等）．
+    /// 一致するものが無ければ，まだ割り当てていない既存コンポーネント（旧バージョンからの
+    /// 移行）を1つ流用し，それも無ければ新規追加する．
     /// </summary>
-    private static DelayedFrameBuffer EnsureGuideDelayBuffer(GameObject host, RenderTexture boxOtherRT)
+    private static DelayedFrameBuffer EnsureDelayBuffer(GameObject host, RenderTexture sourceRT,
+        string label, HashSet<DelayedFrameBuffer> claimed)
     {
-        DelayedFrameBuffer buffer = host.GetComponent<DelayedFrameBuffer>();
+        DelayedFrameBuffer buffer = null;
+        foreach (DelayedFrameBuffer existing in host.GetComponents<DelayedFrameBuffer>())
+        {
+            if (claimed.Contains(existing)) continue;
+            if (existing.sourceTexture == sourceRT) { buffer = existing; break; }
+        }
+        if (buffer == null)
+        {
+            foreach (DelayedFrameBuffer existing in host.GetComponents<DelayedFrameBuffer>())
+            {
+                if (claimed.Contains(existing)) continue;
+                buffer = existing;
+                break;
+            }
+        }
+
         bool created = buffer == null;
         if (created) buffer = Undo.AddComponent<DelayedFrameBuffer>(host);
+        claimed.Add(buffer);
 
-        Undo.RecordObject(buffer, "Configure guide delay buffer");
-        buffer.sourceTexture = boxOtherRT;
+        Undo.RecordObject(buffer, "Configure " + label + " guide delay buffer");
+        buffer.sourceTexture = sourceRT;
         EditorUtility.SetDirty(buffer);
         Debug.Log("[ConeGuideSceneUpgrader] " + host.name
-            + (created ? " に遅延バッファ（近い箱の過去複製）を追加しました" : " の遅延バッファを更新しました")
+            + (created ? " に" + label + "用の遅延バッファを追加しました" : " の" + label + "用の遅延バッファを更新しました")
             + "（" + buffer.delayFrames + "フレーム@" + buffer.captureFps + "fps ≈ "
             + (buffer.DelaySeconds * 1000f).ToString("F0") + "ms 遅延）");
         return buffer;
     }
 
     /// <summary>
-    /// シーン内の既存カメラすべてから錐レイヤを除外する．
+    /// シーン内の既存カメラすべてから錐の全レイヤ（近断面/遠断面/稜線/Self）を除外する．
     /// 箱カメラ（M2 で追加）は錐を映すのが役目なので対象外にする．
     /// </summary>
     /// <returns>変更したカメラの台数</returns>
-    private static int ExcludeConeLayersFromExistingCameras(Scene scene, int otherLayer, int selfLayer)
+    private static int ExcludeConeLayersFromExistingCameras(Scene scene)
     {
-        int mask = (1 << otherLayer) | (1 << selfLayer);
+        int mask = ConeGuideLayers.GuideMask;
         int count = 0;
 
         foreach (Camera cam in CollectComponents<Camera>(scene))
