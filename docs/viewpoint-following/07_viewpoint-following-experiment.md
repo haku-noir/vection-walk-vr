@@ -122,15 +122,19 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 
 - レイヤ `ConeOther`(16) / `ConeSelf`(17) の登録と、既存カメラの Culling Mask からの除外
 - `Cone_Other` / `Cone_Self`（各 `ConeGuide` + `ConePoseFilter`）
+- `Cone_SelfRef`（頂点＝観測者＝自分自身の完全固定リファレンス。09 §3.5 参照。
+  `Cone_Other` と同じレイヤ・カメラでライブ視野に映る。新規カメラ・RT は不要）
 - 箱用 RenderTexture（`BoxOther` / `BoxSelf`。アルファ付き・深度付き）と `LiveBoxCam` / `GhostBoxCam`
 - `ChannelCompositor`（`ViewSwitcher` と同じオブジェクトに追加。**既定は無効**）
 
-主なパラメータ（既定値は 09 §3.1 / §3.2 のとおり）:
+主なパラメータ（既定値は 09 §3.1 / §3.2 / §3.4–3.6 のとおり）:
 
 | 場所 | パラメータ | 既定 |
 |---|---|---|
 | `Cone_*` > ConeGuide | d₁ / d₂ / 開き半角 α / 断面枚数 N | 1.0m / 3.0m / 15° / 2 |
-| 〃 | 線幅（**角度指定**） / 線の色 / 稜線描画 / 別色モード | 0.3° / 白 / ON / OFF |
+| 〃 | 線幅（**角度指定**） / 線の色 / 稜線描画 / 別色モード | 0.3° / 白 / ON / **ON**（近=シアン/遠=マゼンタ） |
+| `Cone_Other` / `Cone_Self` > ConeGuide | Far At Infinity / Observer | OFF / 自動配線（09 §3.4） |
+| `Cone_SelfRef` > ConeGuide | Far At Infinity / 全断面ロック / 線の色 | ON / ON / 緑（固定） |
 | `Cone_*` > ConePoseFilter | ヨー / ピッチ / ロール | Raw / LowPass 0.5Hz / Zero |
 | ExperimentRig > ChannelCompositor | 背景チャンネル / 箱チャンネル | 矩形波交替 / Off |
 | 〃 | f_box の f_bg 同期 / 輝度変調量 Δ | ON / 0.35 |
@@ -296,6 +300,8 @@ errLat, errFwd, errYaw           ← 誤差の成分分解（コース進行方�
   Culling Mask はそれぞれ `ConeOther` / `ConeSelf` のみ、背景は透明クリア
 - `Cone_Other`（頂点＝収録視点）はライブ映像側にのみ、
   `Cone_Self`（頂点＝ライブ頭部）は収録映像側にのみ映る
+- `Cone_SelfRef`（頂点＝観測者＝自分自身，完全固定の的）は `Cone_Other` と同じ
+  `ConeOther` レイヤなのでライブ映像側に一緒に映る（09 §3.5）
 - 箱は下地に対する**輝度変調**として重なる（`final = BG + boxMask × sign × Δ`）
 - **錐ガイドがオフの間は `ChannelCompositor` が無効化され、上の従来経路がそのまま動く**
 

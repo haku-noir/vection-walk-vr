@@ -215,7 +215,56 @@ rotation = apexRot⁻¹ · observerRot
 `farAtInfinity` は `mirrorFrom` の同期対象（2つの錐は同じ見えを保つ必要があるため）。
 `observer` は錐ごとに異なる固有値なので同期しない。
 
-### 3.5 実験パラメータ
+### 3.5 自分基準リファレンス（Cone_SelfRef，拡張）
+
+これまでの箱は「頂点＝相手、観測者＝自分（または逆）」という**2者間の相対誤差**を
+示すものだった。これに加えて、Cone_Other の近断面が**どこに来れば誤差ゼロなのか**を
+視覚的に明示する、頂点＝観測者＝**自分自身**という特殊な錐 `Cone_SelfRef` を追加した。
+
+**幾何的な性質**: 頂点と観測者が同一点（自分の頭）なので、並進誤差 (apexPos − observerPos)
+は常にゼロ。§3.4 の全断面ロック（`lockAllSections`）を重ねがけすることで、姿勢処理
+（LPF/ゼロ化）や target/observer 実装上の微小な位置ズレに由来する残差も消し、
+**錐全体を画面上に完全に静止した「的」**にする。ConePoseFilter は付けない
+（target の生の回転をそのまま使うことで，フィルタによる残差そのものを発生させない）。
+
+| パラメータ | 値 |
+|---|---|
+| 頂点 (`target`) | ライブ頭部（`Cone_Self` と同じ） |
+| Observer | `LiveBoxCam`（`Cone_Other` と同じ＝ライブ視野に描かれる） |
+| レイヤ | `ConeOther`（`Cone_Other` と同じ。新規カメラ・RT・合成チャンネルは不要） |
+| `Far At Infinity` / `lockAllSections` | 両方 ON（常に完全固定） |
+| 見た目 | 単色・緑（`Cone_Other`/`Cone_Self` の色分けと区別するため）。`mirrorFrom` は設定しない |
+| シェーダ | `Hidden/ConeLineOverlay`（`Cone_Other`/`Cone_Self` とは別。下記の深度競合対策） |
+
+> **深度競合への対策**: `Cone_Other` と `Cone_SelfRef` は同じ `LiveBoxCam`・同じ深度
+> バッファに描かれる。通常の `Hidden/ConeLine` は稜線オクルージョン（§1.6）のため
+> `ZWrite On / ZTest LEqual` なので、誤差ゼロ付近で両者が画面上でほぼ重なると
+> **奥にある方が手前の物体に隠されて消える**（実際に発生した不具合）。
+> `Cone_SelfRef` 側だけ専用シェーダ `Hidden/ConeLineOverlay`
+> （`ZTest Always` / `ZWrite Off` / `Queue = Geometry+50`）に切り替えることで，
+> 常に最後に・他の深度を無視して手前に描かれるようにした。`Cone_SelfRef` 自身は
+> 誤差に依存しない固定形状なので，内部の前後多義性解消（ZTest LEqual）は不要。
+
+**使い方**: ライブ視野には常に「Cone_Other の近断面・遠断面（相手＝収録軌跡との誤差、動く）」
+と「Cone_SelfRef（自分の的、静止）」が同時に見える。**Cone_Other の近断面を
+Cone_SelfRef に重ねに行く**ことで、相手の頭部と自分の頭部の位置・向きを完全に
+一致させられる（Cone_Other の遠断面が Far At Infinity で既に固定されているのと
+合わせて、視野内に「動く近断面」と「静止した的」が明確に対比される）。
+
+### 3.6 近断面・遠断面の色分け（既定 ON 化）
+
+近＝シアン／遠＝マゼンタの色分け（`dualColorMode`、既存パラメータ。§3.1 参照）を
+既定で有効化した。3つの錐（`Cone_Other` の近・遠・`Cone_SelfRef`）を同一視野内で
+同時に見分けられるようにするため。
+
+> **注意**: 箱の4ストローク（`BoxMode.FourStroke`）は輝度変調方式（§2.3）のため
+> 色分けとは排他。`ChannelCompositor.EnforceDualColorExclusivity` が箱チャンネルを
+> 4ストロークに切り替えたタイミングで `dualColorMode` を自動的に無効化する（警告ログ）。
+> このとき `Cone_SelfRef` の緑も含めて全ての箱が単色の輝度変調表示に戻る
+> （合成シェーダの `_BoxColorBlend` が箱チャンネル全体に効くグローバルな切替のため。
+> `Cone_SelfRef` 自体の色は変えていない）。
+
+### 3.7 実験パラメータ
 
 | パラメータ | 既定値 | 選択肢 |
 |---|---|---|
@@ -307,8 +356,9 @@ rotation = apexRot⁻¹ · observerRot
 | M2 | 4カメラ・4RT 分離と背景／箱の2チャンネル独立合成 | §2.1 / §2.2 |
 | M3 | 箱の姿勢処理（ヨー / ピッチ / ロール） | §3.2 |
 | M4 | 4ストロークの2チャンネル化と別色モードの排他 | §2.3 |
-| M5 | 初期オフセット・誤差の成分分解・ログ列とファイル名タグ | §3.5 / §6 |
+| M5 | 初期オフセット・誤差の成分分解・ログ列とファイル名タグ | §3.7 / §6 |
 | M6 | 遠断面の無限遠モード（Observerの位置・向き基準の再アンカリングで完全固定，仕様外の拡張） | §3.4 |
+| M7 | 自分基準リファレンス（Cone_SelfRef）＋近/遠の色分けを既定化，仕様外の拡張 | §3.5 / §3.6 |
 
 ### 実装上の決定（仕様に明記が無く、実装側で決めた点）
 
@@ -332,6 +382,20 @@ rotation = apexRot⁻¹ · observerRot
   描かれるので `observer = GhostBoxCam`。`ConeGuideSceneUpgrader` が自動配線する。
   `farAtInfinity` フラグ自体は同期対象（`mirrorFrom`）だが、`observer` は錐ごとに
   異なる固有値なので同期しない
+- **Cone_SelfRef を新規カメラ無しで実現**: 頂点＝観測者＝自分の錐は、レイヤを
+  `Cone_Other` と同じ `ConeOther` にするだけで既存の `LiveBoxCam`（同レイヤのみ撮影）
+  にそのまま映る。新しいカメラ・RenderTexture・合成チャンネルを増やす必要がない
+- **Cone_SelfRef には ConePoseFilter を付けない**: 頂点＝観測者が同一点でも，
+  姿勢処理（ピッチLPF・ロールゼロ化）を通すと生の回転からズレて完全固定でなくなる。
+  target の生の回転をそのまま使うことで，フィルタ由来の残差そのものを発生させない
+- **色分けの既定値変更は Cone_Other/Cone_Self 双方に明示**: `dualColorMode` は
+  `mirrorFrom` の同期対象だが，同期は実行時 `LateUpdate`（`ExecuteAlways`）に依存する。
+  エディタでの実行タイミングに依存させないよう，`ConeGuideSceneUpgrader` が
+  `Cone_Other` と `Cone_Self` の両方に明示的に設定する
+- **Cone_SelfRef の色は単色固定・mirrorFrom なし**: `Cone_Other`/`Cone_Self` の
+  近=シアン/遠=マゼンタと視覚的に区別するため。ただし箱の4ストローク選択時は
+  合成シェーダの `_BoxColorBlend` が箱チャンネル全体に効くグローバルな切替のため，
+  `Cone_SelfRef` の緑も含めて輝度変調表示に戻る（§3.6 参照）
 
 ### 未実装（仕様の未決事項に対応）
 

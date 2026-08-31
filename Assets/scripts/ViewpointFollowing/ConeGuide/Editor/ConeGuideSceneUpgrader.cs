@@ -34,8 +34,11 @@ public static class ConeGuideSceneUpgrader
 {
     private const string ConeOtherObjectName = "Cone_Other";
     private const string ConeSelfObjectName = "Cone_Self";
+    private const string ConeSelfRefObjectName = "Cone_SelfRef";
     private const string ConeLineShaderPath =
         "Assets/scripts/ViewpointFollowing/ConeGuide/ConeLine.shader";
+    private const string ConeLineOverlayShaderPath =
+        "Assets/scripts/ViewpointFollowing/ConeGuide/ConeLineOverlay.shader";
     private const string ChannelCompositeShaderPath =
         "Assets/scripts/ViewpointFollowing/ConeGuide/ChannelComposite.shader";
 
@@ -112,6 +115,12 @@ public static class ConeGuideSceneUpgrader
                 + "（以後は Cone_Other 側を編集してください）");
         }
 
+        // 近断面＝シアン／遠断面＝マゼンタの色分け（Dual Color Mode）を有効化する。
+        // Cone_Other 側で設定すれば mirrorFrom 経由で Cone_Self にも自動同期されるが、
+        // エディタ実行タイミングに依存させないためここで両方に明示しておく
+        EnsureDualColor(coneOther);
+        EnsureDualColor(coneSelf);
+
         // --- 4. 箱用 RenderTexture（アルファ付き・深度付き）を用意する ---
         RenderTexture boxOtherRT = EnsureBoxRenderTexture(BoxOtherRTPath);
         RenderTexture boxSelfRT = EnsureBoxRenderTexture(BoxSelfRTPath);
@@ -140,6 +149,15 @@ public static class ConeGuideSceneUpgrader
         WireObserver(coneOther, liveBoxCam.transform);
         WireObserver(coneSelf, ghostBoxCam.transform);
 
+        // --- 5.6. 自分基準リファレンス（Cone_SelfRef）を用意する ---
+        // 頂点＝観測者＝自分（ライブ頭部）なので並進誤差は常にゼロ。Far At Infinity +
+        // 全断面ロックで完全に画面固定し，Cone_Other の近断面を合わせに行く「的」にする。
+        // Cone_Other と同じレイヤ（ConeOther）に置くので LiveBoxCam がそのまま撮影する
+        // （新しいカメラ・RenderTexture・合成チャンネルは不要）
+        Shader overlayShader = AssetDatabase.LoadAssetAtPath<Shader>(ConeLineOverlayShaderPath);
+        EnsureSelfReferenceCone(scene, ConeSelfRefObjectName,
+            otherLayer, liveAnchor, liveBoxCam.transform, overlayShader);
+
         // --- 6. ChannelCompositor を用意して4入力を配線する（既定は無効） ---
         string compositorNote = EnsureCompositor(scene, coneOther, coneSelf,
             boxOtherRT, boxSelfRT, liveBoxCam, ghostBoxCam);
@@ -156,6 +174,7 @@ public static class ConeGuideSceneUpgrader
             + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ")\n" +
             "Cone_Other → " + ghostAnchor.name + " に追従（" + LiveBoxCamName + " が撮影）\n" +
             "Cone_Self  → " + liveAnchor.name + " に追従（" + GhostBoxCamName + " が撮影）\n" +
+            "Cone_SelfRef → " + liveAnchor.name + " に追従・完全固定（" + LiveBoxCamName + " が撮影）\n" +
             "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n" +
             compositorNote + "\n\n" +
             "【使い方】ChannelCompositor のチェックを入れると2チャンネル合成経路に\n" +
@@ -163,6 +182,12 @@ public static class ConeGuideSceneUpgrader
             "背景モード・箱モード・極性・周波数は Inspector で切り替えられます。\n\n" +
             "【遠断面の無限遠モード】各 Cone の Inspector で Far At Infinity をONにすると，\n" +
             "遠断面が並進誤差では動かなくなります（Observer は自動配線済み）。\n\n" +
+            "【自分基準リファレンス】Cone_SelfRef（緑）は常に画面に完全固定されます。\n" +
+            "Cone_Other の近断面をこの緑の的に合わせに行くことで、相手（収録軌跡）と\n" +
+            "自分の頭部を完全に一致させられます。\n\n" +
+            "【近/遠の色分け】Cone_Other / Cone_Self の Dual Color Mode を有効化しました\n" +
+            "（近断面=シアン／遠断面=マゼンタ）。箱の4ストロークは輝度変調方式のため、\n" +
+            "箱チャンネルを4ストロークにすると自動的に無効化されます（警告ログが出ます）。\n\n" +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -303,6 +328,92 @@ public static class ConeGuideSceneUpgrader
             + ", 姿勢処理: ヨー=" + filter.yawMode + " ピッチ=" + filter.pitchMode
             + " ロール=" + filter.rollMode + "）");
         return cone;
+    }
+
+    /// <summary>
+    /// 自分基準リファレンス（Cone_SelfRef）を用意する．頂点＝観測者＝同一人物（ライブ頭部）
+    /// になる特殊な錐で，Far At Infinity + 全断面ロックにより常に画面上に完全固定される。
+    /// Cone_Other の近断面をこれに合わせに行くことで，並進・回転どちらの誤差も
+    /// 視覚的・明示的にゼロへ追い込める（幾何の詳細は 09 仕様 §3.4 参照）。
+    ///
+    /// 通常の <see cref="EnsureCone"/> とは異なり，<see cref="ConePoseFilter"/> は
+    /// 付けない（姿勢処理でヨー/ピッチ/ロールを加工すると，頂点＝観測者であっても
+    /// 生の姿勢からズレて完全固定でなくなるため，target の生の回転をそのまま使う）．
+    /// 見た目は Cone_Other / Cone_Self と区別できるよう単色（緑）固定とし，
+    /// mirrorFrom も設定しない（幾何以外は独立した固有の見た目にするため）．
+    /// </summary>
+    private static ConeGuide EnsureSelfReferenceCone(Scene scene, string objectName,
+        int layer, Transform target, Transform observer, Shader shader)
+    {
+        Transform existing = FindFirst(scene, new[] { objectName });
+        GameObject go;
+        bool created = false;
+
+        if (existing != null)
+        {
+            go = existing.gameObject;
+        }
+        else
+        {
+            go = new GameObject(objectName, typeof(MeshFilter), typeof(MeshRenderer), typeof(ConeGuide));
+            Undo.RegisterCreatedObjectUndo(go, "Create " + objectName);
+            created = true;
+        }
+
+        ConeGuide cone = go.GetComponent<ConeGuide>();
+        if (cone == null) cone = Undo.AddComponent<ConeGuide>(go);
+
+        Undo.RecordObject(cone, "Configure " + objectName);
+        // レイヤは Cone_Other と同じ（ConeOther）にする＝LiveBoxCam がそのまま撮影する
+        cone.kind = ConeGuide.ConeKind.Other;
+        cone.target = target;
+        cone.observer = observer;
+        cone.farAtInfinity = true;
+        cone.lockAllSections = true;
+        // mirrorFrom が設定されていると，毎フレーム Cone_Other の値（farAtInfinity=false 等）で
+        // 上書きされて完全固定が壊れる。この錐は独立した見た目・条件を持つ必要があるため
+        // 明示的に外す（既存オブジェクトの再利用時に紛れ込んだ設定も含めて必ず解除する）
+        cone.mirrorFrom = null;
+        if (shader != null) cone.shader = shader;
+        // 新規作成時のみ見た目を設定する（Inspector での調整を壊さないため）
+        if (created)
+        {
+            cone.dualColorMode = false;
+            cone.lineColor = new Color(0.35f, 1f, 0.4f); // Cone_Other(シアン/マゼンタ)と区別できる緑
+        }
+        go.layer = layer;
+
+        // 姿勢処理を通すと（頂点＝観測者でも）生の姿勢からズレて完全固定でなくなるため，
+        // ConePoseFilter は意図的に付けない。既存オブジェクトの再利用で紛れ込んでいた場合は
+        // 無効化しておく（コンポーネント自体の削除は Undo が煩雑になるため避ける）
+        ConePoseFilter strayFilter = go.GetComponent<ConePoseFilter>();
+        if (strayFilter != null && strayFilter.enabled)
+        {
+            Undo.RecordObject(strayFilter, "Disable stray pose filter on " + objectName);
+            strayFilter.enabled = false;
+            EditorUtility.SetDirty(strayFilter);
+        }
+        cone.poseFilter = null;
+
+        EditorUtility.SetDirty(cone);
+        Debug.Log("[ConeGuideSceneUpgrader] " + objectName + (created ? " を作成しました" : " を更新しました")
+            + "（target=observer=" + target.name + " / " + observer.name
+            + ", レイヤ: " + layer + ", 完全固定リファレンス）");
+        return cone;
+    }
+
+    /// <summary>
+    /// 近断面=シアン／遠断面=マゼンタの色分け（Dual Color Mode）を有効化する。
+    /// 既に ON ならログを出さず何もしない（冪等）。ユーザーが後で OFF に戻すのは自由。
+    /// </summary>
+    private static void EnsureDualColor(ConeGuide cone)
+    {
+        if (cone.dualColorMode) return;
+        Undo.RecordObject(cone, "Enable dual color mode");
+        cone.dualColorMode = true;
+        EditorUtility.SetDirty(cone);
+        Debug.Log("[ConeGuideSceneUpgrader] " + cone.name + " の Dual Color Mode を有効化しました"
+            + "（近断面=シアン/遠断面=マゼンタ）。箱の4ストローク選択時は自動的に無効化されます。");
     }
 
     /// <summary>

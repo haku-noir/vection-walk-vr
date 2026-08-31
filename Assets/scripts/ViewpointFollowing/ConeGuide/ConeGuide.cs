@@ -76,6 +76,20 @@ public class ConeGuide : MonoBehaviour
     [Tooltip("遠断面を画面上に完全固定する（並進・回転どちらの誤差にも反応しない）。Observer の設定が必要")]
     public bool farAtInfinity = false;
 
+    /// <summary>
+    /// ON の場合，<see cref="farAtInfinity"/> の固定を<b>全断面</b>（近断面・側稜の
+    /// 頂点側の端も含む）に適用し，錐全体を画面上に完全固定する．<see cref="farAtInfinity"/>
+    /// が OFF のときは意味を持たない．
+    ///
+    /// 主な用途は<b>自分基準リファレンス</b>（<see cref="target"/> と <see cref="observer"/>
+    /// を同一人物にする構成，例: Cone_SelfRef）．この場合そもそも頂点＝観測者なので
+    /// 並進誤差は常にゼロだが，姿勢処理（<see cref="poseFilter"/>）の有無や
+    /// target/observer の実装上の位置ズレによる微小な揺れも消し，錐全体を
+    /// 完璧に静止した「合わせ込み先」の的（まと）にできる．
+    /// </summary>
+    [Tooltip("ONで全断面（近断面含む）を画面に完全固定する（自分基準リファレンス用）。Far At Infinity がONのときのみ有効")]
+    public bool lockAllSections = false;
+
     /// <summary>開き半角 α[deg]（既定 15° = 見かけ直径30°）</summary>
     [Tooltip("開き半角 α[deg]（断面半幅 = d·tanα。既定15°=見かけ直径30°）")]
     [Range(5f, 30f)] public float halfAngleDeg = 15f;
@@ -133,7 +147,7 @@ public class ConeGuide : MonoBehaviour
     /// 錐ごとに独立したコンポーネントなので取り違えやすく，それを防ぐための仕組み．
     /// </summary>
     /// <remarks>
-    /// 同期されるのは幾何・見た目（d1 / d2 / 遠断面無限遠モード / α / 断面枚数 / 線幅 / 線の色 / 稜線 / 別色モード）と，
+    /// 同期されるのは幾何・見た目（d1 / d2 / 遠断面無限遠モード / 全断面ロック / α / 断面枚数 / 線幅 / 線の色 / 稜線 / 別色モード）と，
     /// 姿勢処理の条件（ヨー・ピッチ・ロールの処理とカットオフ）．
     /// 追従対象・種別・Observer・シェーダ・フィルタの内部状態は錐ごとの固有値なのでコピーしない．
     ///
@@ -298,6 +312,7 @@ public class ConeGuide : MonoBehaviour
             nearDistance = source.nearDistance;
             farDistance = source.farDistance;
             farAtInfinity = source.farAtInfinity;
+            lockAllSections = source.lockAllSections;
             halfAngleDeg = source.halfAngleDeg;
             sectionCount = source.sectionCount;
             lineWidthDeg = source.lineWidthDeg;
@@ -368,6 +383,9 @@ public class ConeGuide : MonoBehaviour
     /// （並進・回転どちらの誤差にも反応しない）．誤差の手がかりは近断面だけが担う．
     /// d2 の値自体は見かけの角度に影響しない（方向だけで決まる）ので，線幅計算などは
     /// そのまま d2 を使い続けてよい．
+    ///
+    /// <see cref="lockAllSections"/> が有効なときは，この再アンカリングを近断面・
+    /// 側稜の頂点側の端にも適用し，錐全体を画面上に完全固定する．
     /// </remarks>
     private void BuildMesh(Vector3 apexPos, Quaternion apexRot)
     {
@@ -392,7 +410,8 @@ public class ConeGuide : MonoBehaviour
             Color c = SectionColor(t);
             float half = d * tanHalfWidth;       // この断面での線の半太さ
             bool isFarthest = (i == n - 1);
-            Vector3[] corner = Corners(d, d * tanAlpha, isFarthest ? farAnchor : FarAnchor.Identity);
+            bool useAnchor = isFarthest || lockAllSections;
+            Vector3[] corner = Corners(d, d * tanAlpha, useAnchor ? farAnchor : FarAnchor.Identity);
 
             for (int e = 0; e < 4; e++)
             {
@@ -405,7 +424,7 @@ public class ConeGuide : MonoBehaviour
         {
             // 既定は角錐台の側稜（最近断面〜最遠断面）．ON なら頂点まで延ばす
             float dStart = ridgeExtendToApex ? 0f : d1;
-            Vector3[] a = Corners(dStart, dStart * tanAlpha, FarAnchor.Identity);
+            Vector3[] a = Corners(dStart, dStart * tanAlpha, lockAllSections ? farAnchor : FarAnchor.Identity);
             Vector3[] b = Corners(dN, dN * tanAlpha, farAnchor);
             Color ca = SectionColor(0f);   // 手前側（頂点寄り）の色
             Color cb = SectionColor(1f);   // 最遠断面の色
@@ -607,7 +626,7 @@ public class ConeGuide : MonoBehaviour
     {
         public float near, far, alpha, width;
         public int sections;
-        public bool ridges, apex, dual, infinity;
+        public bool ridges, apex, dual, infinity, lockAll;
         public Color line, nearC, farC;
 
         public static GeometryKey From(ConeGuide g)
@@ -623,6 +642,7 @@ public class ConeGuide : MonoBehaviour
                 apex = g.ridgeExtendToApex,
                 dual = g.dualColorMode,
                 infinity = g.farAtInfinity,
+                lockAll = g.lockAllSections,
                 line = g.lineColor,
                 nearC = g.nearColor,
                 farC = g.farColor,
@@ -633,7 +653,7 @@ public class ConeGuide : MonoBehaviour
         {
             return near == o.near && far == o.far && alpha == o.alpha && width == o.width
                 && sections == o.sections && ridges == o.ridges && apex == o.apex && dual == o.dual
-                && infinity == o.infinity
+                && infinity == o.infinity && lockAll == o.lockAll
                 && line == o.line && nearC == o.nearC && farC == o.farC;
         }
     }
