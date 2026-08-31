@@ -40,6 +40,12 @@ using UnityEngine.UI;
 /// <see cref="guideRidgeEnabled"/> で<b>どの部分にガイド効果を掛けるかは独立に ON/OFF</b>
 /// できる（09 §3.7 拡張）．稜線そのものの表示/非表示は既存の
 /// <see cref="ConeGuide.drawRidges"/> で別途 ON/OFF できる（ガイド効果とは独立）．
+///
+/// 「数百ms前」の<b>遅延量（フレーム数）も部位ごとに独立設定できる</b>
+/// （<see cref="guideNearDelayFrames"/> / <see cref="guideFarDelayFrames"/> /
+/// <see cref="guideRidgeDelayFrames"/>）．<see cref="guideDelayLocked"/> を ON にすると
+/// 3部位すべてを <see cref="guideDelayFrames"/> の1つの値に固定できる（既定は ON）．
+/// この合成器が各 <see cref="DelayedFrameBuffer.delayFrames"/> の唯一の書き込み元になる．
 /// </summary>
 /// <remarks>
 /// - <b>既存の ViewSwitcher の単一テクスチャ経路は変更していない</b>．この合成器が有効な間だけ
@@ -274,6 +280,33 @@ public class ChannelCompositor : MonoBehaviour
     public bool guideRidgeEnabled = false;
 
     /// <summary>
+    /// ON: 近断面・遠断面・稜線の「数百ms前」の遅延量をすべて <see cref="guideDelayFrames"/>
+    /// に固定する（既定）．OFF: <see cref="guideNearDelayFrames"/> /
+    /// <see cref="guideFarDelayFrames"/> / <see cref="guideRidgeDelayFrames"/> で
+    /// 部位ごとに個別設定できる．いずれの場合も実体は
+    /// <see cref="guideNearDelayBuffer"/> 等の <c>DelayedFrameBuffer.delayFrames</c> に
+    /// 毎フレーム反映される（この合成器が唯一の書き込み元になる）．
+    /// </summary>
+    [Tooltip("ON: 近断面/遠断面/稜線の遅延量をすべて Guide Delay Frames に固定。OFF: 部位ごとに個別設定")]
+    public bool guideDelayLocked = true;
+
+    /// <summary>固定時（<see cref="guideDelayLocked"/> = ON）に3部位共通で使う遅延フレーム数</summary>
+    [Tooltip("固定時に使う共通の遅延フレーム数（8 @30fps ≈267ms）")]
+    [Range(0, 29)] public int guideDelayFrames = 8;
+
+    /// <summary>近断面の遅延フレーム数（<see cref="guideDelayLocked"/> = OFF のときのみ有効）</summary>
+    [Tooltip("近断面の遅延フレーム数（固定OFF時のみ有効）")]
+    [Range(0, 29)] public int guideNearDelayFrames = 8;
+
+    /// <summary>遠断面の遅延フレーム数（<see cref="guideDelayLocked"/> = OFF のときのみ有効）</summary>
+    [Tooltip("遠断面の遅延フレーム数（固定OFF時のみ有効）")]
+    [Range(0, 29)] public int guideFarDelayFrames = 8;
+
+    /// <summary>稜線の遅延フレーム数（<see cref="guideDelayLocked"/> = OFF のときのみ有効）</summary>
+    [Tooltip("稜線の遅延フレーム数（固定OFF時のみ有効）")]
+    [Range(0, 29)] public int guideRidgeDelayFrames = 8;
+
+    /// <summary>
     /// ガイドチャンネルの4ストローク極性（guideMode = FourStroke のときのみ有効）．
     /// 4ストローク歩行シーン（<see cref="FourStrokeCompositor.Polarity"/>）と同じ意味づけ:
     /// Enhance＝過去→現在の順で提示し実運動と同方向の信号を加算（加速感），
@@ -420,6 +453,9 @@ public class ChannelCompositor : MonoBehaviour
 
         // 箱の4ストロークは輝度変調方式なので別色モードとは両立しない（仕様 §2.3）
         EnforceDualColorExclusivity();
+
+        // ガイドの「数百ms前」の遅延量を DelayedFrameBuffer 側へ反映する（09 §3.7 拡張）
+        ApplyGuideDelayFrames();
 
         float dt = Time.deltaTime; // 一時停止中は 0 → 変調も止まる
 
@@ -606,6 +642,26 @@ public class ChannelCompositor : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// 近断面/遠断面/稜線の「数百ms前」の遅延量を，Inspector の設定に従って
+    /// 各 <see cref="DelayedFrameBuffer"/> に反映する（09 §3.7 拡張）．
+    ///
+    /// <see cref="guideDelayLocked"/> が ON なら3部位すべてに <see cref="guideDelayFrames"/>
+    /// を，OFF なら部位ごとの個別値を書き込む。この合成器が
+    /// <c>DelayedFrameBuffer.delayFrames</c> の唯一の書き込み元になる（Inspector で
+    /// 各 DelayedFrameBuffer を直接編集しても，次のフレームでここから上書きされる）。
+    /// </summary>
+    private void ApplyGuideDelayFrames()
+    {
+        int nearFrames = guideDelayLocked ? guideDelayFrames : guideNearDelayFrames;
+        int farFrames = guideDelayLocked ? guideDelayFrames : guideFarDelayFrames;
+        int ridgeFrames = guideDelayLocked ? guideDelayFrames : guideRidgeDelayFrames;
+
+        if (guideNearDelayBuffer != null) guideNearDelayBuffer.delayFrames = nearFrames;
+        if (guideFarDelayBuffer != null) guideFarDelayBuffer.delayFrames = farFrames;
+        if (guideRidgeDelayBuffer != null) guideRidgeDelayBuffer.delayFrames = ridgeFrames;
+    }
+
     /// <summary>提示条件から波形を決める</summary>
     private static ChannelPhase.Waveform WaveformOf(BackgroundMode mode)
     {
@@ -687,6 +743,12 @@ public class ChannelCompositor : MonoBehaviour
             + " [近:" + (guideNearEnabled ? "ON" : "OFF")
             + " 遠:" + (guideFarEnabled ? "ON" : "OFF")
             + " 稜線:" + (guideRidgeEnabled ? "ON" : "OFF") + "]");
+        GUI.Label(new Rect(Screen.width - 430, 130, 420, 20),
+            "ガイド遅延: " + (guideDelayLocked
+                ? "固定 " + DelayMsLabel(guideNearDelayBuffer)
+                : "近" + DelayMsLabel(guideNearDelayBuffer)
+                    + " 遠" + DelayMsLabel(guideFarDelayBuffer)
+                    + " 稜線" + DelayMsLabel(guideRidgeDelayBuffer)));
 
         // 別色モードを自動無効化した場合は目立つように出す（条件の取り違えを防ぐ）
         if (dualColorAutoDisabled)
@@ -706,6 +768,12 @@ public class ChannelCompositor : MonoBehaviour
                 "箱の姿勢: ヨー=" + filter.yawMode + " ピッチ=" + filter.pitchMode
                 + " ロール=" + filter.rollMode + (filter.enabled ? "" : "（無効）"));
         }
+    }
+
+    /// <summary>HUD 表示用: DelayedFrameBuffer の現在の遅延時間を "(267ms)" の形で返す</summary>
+    private static string DelayMsLabel(DelayedFrameBuffer buffer)
+    {
+        return buffer != null ? "(" + (buffer.DelaySeconds * 1000f).ToString("F0") + "ms)" : "(-)";
     }
 #endif
 }

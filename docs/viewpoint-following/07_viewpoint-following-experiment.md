@@ -143,13 +143,25 @@ Unity メニュー **Tools > 視点追従実験 > 実験シーンを生成** を
 | ExperimentRig > ChannelCompositor | 背景チャンネル / 箱チャンネル / ガイドチャンネル | 矩形波交替 / Off / Off |
 | 〃 | f_box の f_bg 同期 / 輝度変調量 Δ（箱・ガイド共通の既定値） | ON / 0.35 |
 | 〃 | Guide Near Enabled / Guide Far Enabled / Guide Ridge Enabled（拡張 09 §3.7） | ON / OFF / OFF |
-| ExperimentRig > DelayedFrameBuffer（近断面用・遠断面用・稜線用それぞれ） | delayFrames / captureFps | 8 / 30fps（≈267ms） |
+| 〃 | Guide Delay Locked（拡張 09 §3.7） | ON（3部位とも Guide Delay Frames に固定） |
+| 〃 | Guide Delay Frames（固定時に使う共通値） | 8（≈267ms @30fps） |
+| 〃 | Guide Near/Far/Ridge Delay Frames（固定OFF時のみ有効） | 8 / 8 / 8（≈267ms @30fps） |
 | ExperimentRig > FollowingExperimentManager | 初期オフセット（横 / 前後 / ヨー） | 0m / 0m / 0° |
 
 > **近断面/遠断面/稜線それぞれの4ストローク ON/OFF**は `ChannelCompositor > Guide Near
 > Enabled` / `Guide Far Enabled` / `Guide Ridge Enabled` で独立に切り替えられる
 > （09 §3.7 拡張）。提示条件（モード・極性・周波数）は共有するが，実際にどこに効果を
 > 掛けるかはこのチェックで決まる。
+>
+> **「数百ms前」の遅延量も部位ごとに自由に変更できる**（09 §3.7 拡張）。
+> `Guide Delay Locked` を ON にすると `Guide Delay Frames` 1つで近断面・遠断面・稜線
+> すべての遅延を揃えられる（既定）。OFF にすると `Guide Near/Far/Ridge Delay Frames`
+> でそれぞれ個別の値を設定できる（1フレーム=captureFps分の1秒，既定30fpsなら
+> 1フレーム≈33ms）。`ChannelCompositor` がこれらの値を毎フレーム各
+> `DelayedFrameBuffer.delayFrames` へ書き込む唯一の書き込み元になるため，
+> 個々の `DelayedFrameBuffer` コンポーネントを Inspector で直接編集しても
+> 次のフレームで上書きされる（`ChannelCompositor` 側で設定すること）。
+>
 > **稜線<b>表示</b>自体の ON/OFF** は `Cone_Other`（`Mirror From` 経由で `Cone_Self` にも
 > 同期）の `Draw Ridges` で切り替える。これはガイド効果の ON/OFF とは別の機能で，
 > 稜線を非表示にすればガイド効果も当然出ない。
@@ -288,7 +300,7 @@ errLat, errFwd, errYaw           ← 誤差の成分分解（コース進行方�
 | `ConeGuide/ConeLine.shader` | 錐の線（ZWrite On / ZTest LEqual で稜線オクルージョンを成立させる） |
 | `ConeGuide/ConePoseFilter.cs` | 箱の姿勢処理（ヨー/ピッチ/ロールを Raw / LowPass / Zero） |
 | `ConeGuide/ChannelPhase.cs` | 1チャンネル分の位相計算（矩形波 / 4ストローク）。背景用・箱用に独立適用 |
-| `ConeGuide/ChannelCompositor.cs` | 背景と箱の2チャンネル独立合成（4入力 → CenterRawImage） |
+| `ConeGuide/ChannelCompositor.cs` | 背景・箱・ガイドの3チャンネル独立合成（→ CenterRawImage）。ガイドの近断面/遠断面/稜線ごとの ON/OFF・遅延量（Guide Delay Locked/Frames）もここで管理する |
 | `ConeGuide/ChannelComposite.shader` | 上記の合成シェーダ（箱は輝度変調方式で重ねる） |
 | `ConeGuide/Editor/ConeGuideSceneUpgrader.cs` | 既存シーンへの錐ガイド追加（メニュー: Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加） |
 

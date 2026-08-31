@@ -306,7 +306,10 @@ M8 でこの方式は**廃止**し、§3.7 の「近い箱の今 vs 数百ms前�
 | `Guide Near Enabled`（拡張） | ON | 近断面にガイド効果を掛けるか。従来からの挙動を維持するため既定ON |
 | `Guide Far Enabled`（拡張） | OFF | 遠断面にガイド効果を掛けるか。新規追加の能力のため既定OFF（明示的に有効化するまで従来と同じ見え） |
 | `Guide Ridge Enabled`（拡張） | OFF | 稜線にガイド効果を掛けるか。新規追加の能力のため既定OFF |
-| `DelayedFrameBuffer.delayFrames` / `captureFps`（近断面用・遠断面用・稜線用それぞれ） | 8 / 30fps ≈267ms | 4ストローク歩行シーンと同じ既定値 |
+| `Guide Delay Locked`（拡張） | ON | 近断面/遠断面/稜線の「数百ms前」の遅延量をすべて `Guide Delay Frames` に固定するか |
+| `Guide Delay Frames`（拡張） | 8 | 固定時（`Guide Delay Locked`=ON）に3部位共通で使う遅延フレーム数（8 @30fps ≈267ms） |
+| `Guide Near/Far/Ridge Delay Frames`（拡張） | 8 / 8 / 8 | 部位ごとの遅延フレーム数（`Guide Delay Locked`=OFF のときのみ有効） |
+| `DelayedFrameBuffer.captureFps`（近断面用・遠断面用・稜線用それぞれ） | 30fps | 4ストローク歩行シーンと同じ既定値。取り込みレートは部位間で個別設定するメリットが薄いため `ChannelCompositor` からは操作せず，各コンポーネントを直接編集する |
 
 合成式（既存の箱と同じ輝度変調方式，`ChannelComposite.shader`）:
 
@@ -415,6 +418,7 @@ final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
 | M8 | ガイド4ストロークチャンネルを箱チャンネルと独立に追加。当初は近い箱⇔的（Cone_SelfRef）で実装したが，理論的検証の結果「近い箱の今⇔数百ms前」（4ストローク歩行シーンと同じ方式）に作り直した，仕様外の拡張 | §3.7 |
 | M9 | ガイド4ストロークを遠断面にも適用。`Cone_Other` を近断面/遠断面/稜線の3レイヤに分離し，`Guide Near Enabled` / `Guide Far Enabled` で断面ごとに独立 ON/OFF できるようにした，仕様外の拡張 | §2.1 / §3.7 |
 | M10 | ガイド4ストロークを稜線にも適用。稜線用の専用カメラ・RT・`DelayedFrameBuffer` を追加し，`Guide Ridge Enabled` で独立 ON/OFF できるようにした，仕様外の拡張。稜線<b>表示</b>自体の ON/OFF は既存の `drawRidges` で対応済み（ガイド効果の ON/OFF とは別物） | §2.1 / §3.7 |
+| M11 | ガイド「数百ms前」の遅延量（フレーム数）を `ChannelCompositor` の Inspector から部位ごとに自由に変更できるようにした，仕様外の拡張。`Guide Delay Locked`（既定ON）で3部位を1つの値に固定するか，OFF にして個別設定するかを選べる | §3.7 |
 
 ### 実装上の決定（仕様に明記が無く、実装側で決めた点）
 
@@ -461,6 +465,15 @@ final = (背景+箱の合成結果) + guideMask × guideSign × guideΔ
   は `LiveBoxCam` の Culling Mask を3レイヤ分に広げることで従来と同じ見えを維持している。
   `Cone_Self` は分離しない（`kind == ConeKind.Other` のときだけ分離する
   `ConeGuide.Split` プロパティで判定）
+- **遅延量の書き込み元は ChannelCompositor に一元化（M11）**: `DelayedFrameBuffer.delayFrames`
+  自体はコンポーネント側の public フィールドとしてすでに自由編集できたが，同じ
+  GameObject に近断面用・遠断面用・稜線用の3つが見分けなく並ぶため，どれがどの部位か
+  Inspector 上で分かりにくかった。`ChannelCompositor` に `guideDelayLocked` /
+  `guideDelayFrames` / `guideNear/Far/RidgeDelayFrames` を追加し，`LateUpdate` の
+  `ApplyGuideDelayFrames` が毎フレーム各 `DelayedFrameBuffer.delayFrames` へ書き込む
+  形にした。これにより `ChannelCompositor` が唯一の設定場所になり，個々の
+  `DelayedFrameBuffer` を Inspector で直接編集しても次のフレームで上書きされる
+  （意図的な仕様。誤って個別編集した状態が残らないようにするため）
 
 ### 未実装（仕様の未決事項に対応）
 
