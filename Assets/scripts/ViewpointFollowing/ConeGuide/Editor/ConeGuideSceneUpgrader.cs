@@ -46,12 +46,14 @@ public static class ConeGuideSceneUpgrader
     private const string LiveRTPath = "Assets/Textures/CenterEye.renderTexture";
     private const string BoxOtherRTPath = "Assets/Textures/BoxOther.renderTexture";
     private const string BoxSelfRTPath = "Assets/Textures/BoxSelf.renderTexture";
+    private const string BoxGuideRTPath = "Assets/Textures/BoxGuide.renderTexture";
 
     private const string LiveBoxCamName = "LiveBoxCam";
     private const string GhostBoxCamName = "GhostBoxCam";
+    private const string GuideBoxCamName = "GuideBoxCam";
 
     /// <summary>箱カメラの名前（M2 で追加．Culling Mask の除外対象から外すために使う）</summary>
-    private static readonly string[] BoxCameraNames = { "LiveBoxCam", "GhostBoxCam" };
+    private static readonly string[] BoxCameraNames = { "LiveBoxCam", "GhostBoxCam", "GuideBoxCam" };
 
     /// <summary>ライブ視点のカメラ／頭部アンカーの候補名（実験シーン / 再生確認シーン）</summary>
     private static readonly string[] LiveAnchorNames = { "CenterEyeAnchor", "LiveReplayCamera" };
@@ -72,7 +74,8 @@ public static class ConeGuideSceneUpgrader
         // --- 1. レイヤを登録する ---
         int otherLayer = EnsureLayer(ConeGuideLayers.ConeOtherName, ConeGuideLayers.ConeOtherIndex);
         int selfLayer = EnsureLayer(ConeGuideLayers.ConeSelfName, ConeGuideLayers.ConeSelfIndex);
-        if (otherLayer < 0 || selfLayer < 0)
+        int selfRefLayer = EnsureLayer(ConeGuideLayers.ConeSelfRefName, ConeGuideLayers.ConeSelfRefIndex);
+        if (otherLayer < 0 || selfLayer < 0 || selfRefLayer < 0)
         {
             EditorUtility.DisplayDialog("エラー",
                 "レイヤの空きが足りません。ProjectSettings > Tags and Layers を確認してください。", "OK");
@@ -124,7 +127,8 @@ public static class ConeGuideSceneUpgrader
         // --- 4. 箱用 RenderTexture（アルファ付き・深度付き）を用意する ---
         RenderTexture boxOtherRT = EnsureBoxRenderTexture(BoxOtherRTPath);
         RenderTexture boxSelfRT = EnsureBoxRenderTexture(BoxSelfRTPath);
-        if (boxOtherRT == null || boxSelfRT == null)
+        RenderTexture boxGuideRT = EnsureBoxRenderTexture(BoxGuideRTPath);
+        if (boxOtherRT == null || boxSelfRT == null || boxGuideRT == null)
         {
             EditorUtility.DisplayDialog("エラー",
                 "箱用 RenderTexture を用意できませんでした。\n複製元: " + LiveRTPath, "OK");
@@ -143,6 +147,9 @@ public static class ConeGuideSceneUpgrader
         }
         Camera liveBoxCam = EnsureBoxCamera(scene, LiveBoxCamName, liveBgCam, otherLayer, boxOtherRT);
         Camera ghostBoxCam = EnsureBoxCamera(scene, GhostBoxCamName, ghostBgCam, selfLayer, boxSelfRT);
+        // ガイドチャンネル専用カメラ。Cone_SelfRef 用の selfRefLayer だけを撮る。
+        // ライブ視野に描かれる点は LiveBoxCam と同じなので liveBgCam の子にする
+        Camera guideBoxCam = EnsureBoxCamera(scene, GuideBoxCamName, liveBgCam, selfRefLayer, boxGuideRT);
 
         // --- 5.5. Far At Infinity 用の Observer（この錐を実際に描画するカメラ）を配線する ---
         // Cone_Other はライブ視野（LiveBoxCam）に，Cone_Self は収録視野（GhostBoxCam）に描かれる
@@ -152,18 +159,18 @@ public static class ConeGuideSceneUpgrader
         // --- 5.6. 自分基準リファレンス（Cone_SelfRef）を用意する ---
         // 頂点＝観測者＝自分（ライブ頭部）なので並進誤差は常にゼロ。Far At Infinity +
         // 全断面ロックで完全に画面固定し，Cone_Other の近断面を合わせに行く「的」にする。
-        // Cone_Other と同じレイヤ（ConeOther）に置くので LiveBoxCam がそのまま撮影する
-        // （新しいカメラ・RenderTexture・合成チャンネルは不要）
+        // Cone_Other とは別レイヤ（ConeSelfRef）に置き，専用の GuideBoxCam で撮影する
+        // （ガイド4ストロークチャンネルが Cone_Other 側と独立に扱えるようにするため。09 §3.7）
         Shader overlayShader = AssetDatabase.LoadAssetAtPath<Shader>(ConeLineOverlayShaderPath);
         EnsureSelfReferenceCone(scene, ConeSelfRefObjectName,
-            otherLayer, liveAnchor, liveBoxCam.transform, overlayShader);
+            selfRefLayer, liveAnchor, guideBoxCam.transform, overlayShader);
 
-        // --- 6. ChannelCompositor を用意して4入力を配線する（既定は無効） ---
+        // --- 6. ChannelCompositor を用意して6入力を配線する（既定は無効） ---
         string compositorNote = EnsureCompositor(scene, coneOther, coneSelf,
-            boxOtherRT, boxSelfRT, liveBoxCam, ghostBoxCam);
+            boxOtherRT, boxSelfRT, boxGuideRT, liveBoxCam, ghostBoxCam, guideBoxCam);
 
-        // --- 7. 既存カメラの Culling Mask から両レイヤを除外する ---
-        int excluded = ExcludeConeLayersFromExistingCameras(scene, otherLayer, selfLayer);
+        // --- 7. 既存カメラの Culling Mask から3レイヤとも除外する ---
+        int excluded = ExcludeConeLayersFromExistingCameras(scene, otherLayer, selfLayer, selfRefLayer);
 
         EditorSceneManager.MarkSceneDirty(scene);
         Selection.activeGameObject = coneOther.gameObject;
@@ -171,20 +178,23 @@ public static class ConeGuideSceneUpgrader
         EditorUtility.DisplayDialog("錐ガイドを追加しました",
             "シーン: " + scene.name + "\n\n" +
             "レイヤ: " + ConeGuideLayers.ConeOtherName + " (" + otherLayer + ") / "
-            + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ")\n" +
+            + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ") / "
+            + ConeGuideLayers.ConeSelfRefName + " (" + selfRefLayer + ")\n" +
             "Cone_Other → " + ghostAnchor.name + " に追従（" + LiveBoxCamName + " が撮影）\n" +
             "Cone_Self  → " + liveAnchor.name + " に追従（" + GhostBoxCamName + " が撮影）\n" +
-            "Cone_SelfRef → " + liveAnchor.name + " に追従・完全固定（" + LiveBoxCamName + " が撮影）\n" +
+            "Cone_SelfRef → " + liveAnchor.name + " に追従・完全固定（" + GuideBoxCamName + " が撮影）\n" +
             "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n" +
             compositorNote + "\n\n" +
-            "【使い方】ChannelCompositor のチェックを入れると2チャンネル合成経路に\n" +
+            "【使い方】ChannelCompositor のチェックを入れると3チャンネル合成経路に\n" +
             "切り替わります（オフの間は従来どおり ViewSwitcher が表示を担当）。\n" +
-            "背景モード・箱モード・極性・周波数は Inspector で切り替えられます。\n\n" +
+            "背景モード・箱モード・ガイドモード・極性・周波数は Inspector で切り替えられます。\n\n" +
             "【遠断面の無限遠モード】各 Cone の Inspector で Far At Infinity をONにすると，\n" +
             "遠断面が並進誤差では動かなくなります（Observer は自動配線済み）。\n\n" +
-            "【自分基準リファレンス】Cone_SelfRef（緑）は常に画面に完全固定されます。\n" +
-            "Cone_Other の近断面をこの緑の的に合わせに行くことで、相手（収録軌跡）と\n" +
-            "自分の頭部を完全に一致させられます。\n\n" +
+            "【自分基準リファレンス】Cone_SelfRef（緑）は既定（Guide Mode=SelfFixed）では\n" +
+            "常に画面に完全固定されます。Cone_Other の近断面をこの緑の的に合わせに行くことで、\n" +
+            "相手（収録軌跡）と自分の頭部を完全に一致させられます。\n" +
+            "Guide Mode を FourStroke にすると、近い箱⇔的の間に4ストローク運動信号を\n" +
+            "掛けられます（既存の箱4ストロークとは完全に独立したチャンネルです）。\n\n" +
             "【近/遠の色分け】Cone_Other / Cone_Self の Dual Color Mode を有効化しました\n" +
             "（近断面=シアン／遠断面=マゼンタ）。箱の4ストロークは輝度変調方式のため、\n" +
             "箱チャンネルを4ストロークにすると自動的に無効化されます（警告ログが出ます）。\n\n" +
@@ -208,18 +218,18 @@ public static class ConeGuideSceneUpgrader
             return;
         }
 
-        int mask = (1 << ConeGuideLayers.OtherLayer) | (1 << ConeGuideLayers.SelfLayer);
+        int mask = ConeGuideLayers.GuideMask;
         bool showing = (liveCam.cullingMask & mask) != 0;
 
         Undo.RecordObject(liveCam, "Toggle Cone Guide Preview");
         liveCam.cullingMask = showing
             ? (liveCam.cullingMask & ~mask)   // 元に戻す（除外）
-            : (liveCam.cullingMask | mask);   // プレビュー表示（両方の錐を映す）
+            : (liveCam.cullingMask | mask);   // プレビュー表示（3つの錐をすべて映す）
         EditorUtility.SetDirty(liveCam);
         EditorSceneManager.MarkSceneDirty(scene);
 
         Debug.Log("[ConeGuideSceneUpgrader] 錐ガイドのプレビュー表示: "
-            + (showing ? "OFF（本来の設定に戻しました）" : "ON（" + liveCam.name + " に両方の錐を映しています）")
+            + (showing ? "OFF（本来の設定に戻しました）" : "ON（" + liveCam.name + " に3つの錐をすべて映しています）")
             + "\n※本番実験では必ず OFF に戻すこと。");
     }
 
@@ -336,6 +346,11 @@ public static class ConeGuideSceneUpgrader
     /// Cone_Other の近断面をこれに合わせに行くことで，並進・回転どちらの誤差も
     /// 視覚的・明示的にゼロへ追い込める（幾何の詳細は 09 仕様 §3.4 参照）。
     ///
+    /// <see cref="ConeGuide.ConeKind.SelfRef"/>専用レイヤ（ConeSelfRef）に置き，
+    /// 専用の GuideBoxCam で撮影する。Cone_Other とレイヤを分けているのは，
+    /// ガイド4ストロークチャンネル（近い箱=Cone_Other ⇔ 的=Cone_SelfRef，09 §3.7）が
+    /// 箱チャンネル（Cone_Other ⇔ Cone_Self）と独立した入力を持てるようにするため。
+    ///
     /// 通常の <see cref="EnsureCone"/> とは異なり，<see cref="ConePoseFilter"/> は
     /// 付けない（姿勢処理でヨー/ピッチ/ロールを加工すると，頂点＝観測者であっても
     /// 生の姿勢からズレて完全固定でなくなるため，target の生の回転をそのまま使う）．
@@ -364,8 +379,8 @@ public static class ConeGuideSceneUpgrader
         if (cone == null) cone = Undo.AddComponent<ConeGuide>(go);
 
         Undo.RecordObject(cone, "Configure " + objectName);
-        // レイヤは Cone_Other と同じ（ConeOther）にする＝LiveBoxCam がそのまま撮影する
-        cone.kind = ConeGuide.ConeKind.Other;
+        // 専用レイヤ（ConeSelfRef）に置く＝GuideBoxCam がそのまま撮影する
+        cone.kind = ConeGuide.ConeKind.SelfRef;
         cone.target = target;
         cone.observer = observer;
         cone.farAtInfinity = true;
@@ -534,7 +549,8 @@ public static class ConeGuideSceneUpgrader
     /// </summary>
     /// <returns>ダイアログに出す1行の結果メッセージ</returns>
     private static string EnsureCompositor(Scene scene, ConeGuide coneOther, ConeGuide coneSelf,
-        RenderTexture boxOtherRT, RenderTexture boxSelfRT, Camera liveBoxCam, Camera ghostBoxCam)
+        RenderTexture boxOtherRT, RenderTexture boxSelfRT, RenderTexture boxGuideRT,
+        Camera liveBoxCam, Camera ghostBoxCam, Camera guideBoxCam)
     {
         List<ViewSwitcher> switchers = CollectComponents<ViewSwitcher>(scene);
         if (switchers.Count == 0)
@@ -562,10 +578,12 @@ public static class ConeGuideSceneUpgrader
         compositor.bgGhostTexture = switcher.playbackTexture;
         compositor.boxOtherTexture = boxOtherRT;
         compositor.boxSelfTexture = boxSelfRT;
+        compositor.guideTargetTexture = boxGuideRT;
         compositor.coneOther = coneOther;
         compositor.coneSelf = coneSelf;
         compositor.liveBoxCamera = liveBoxCam;
         compositor.ghostBoxCamera = ghostBoxCam;
+        compositor.guideBoxCamera = guideBoxCam;
         if (compositor.shader == null)
         {
             compositor.shader = AssetDatabase.LoadAssetAtPath<Shader>(ChannelCompositeShaderPath);
@@ -619,9 +637,9 @@ public static class ConeGuideSceneUpgrader
     /// 箱カメラ（M2 で追加）は錐を映すのが役目なので対象外にする．
     /// </summary>
     /// <returns>変更したカメラの台数</returns>
-    private static int ExcludeConeLayersFromExistingCameras(Scene scene, int otherLayer, int selfLayer)
+    private static int ExcludeConeLayersFromExistingCameras(Scene scene, int otherLayer, int selfLayer, int selfRefLayer)
     {
-        int mask = (1 << otherLayer) | (1 << selfLayer);
+        int mask = (1 << otherLayer) | (1 << selfLayer) | (1 << selfRefLayer);
         int count = 0;
 
         foreach (Camera cam in CollectComponents<Camera>(scene))

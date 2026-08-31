@@ -2,9 +2,9 @@
 using UnityEngine.UI;
 
 /// <summary>
-/// 背景と箱を<b>独立した2チャンネル</b>として合成する合成器（09 仕様 §2.2）．
+/// 背景・箱・ガイドを<b>独立した3チャンネル</b>として合成する合成器（09 仕様 §2.2 / §3.7）．
 ///
-/// 4つの入力を受け取り，チャンネルごとに選んだ提示条件で合成して RawImage に出す:
+/// 6つの入力を受け取り，チャンネルごとに選んだ提示条件で合成して RawImage に出す:
 ///
 /// | 入力 | 中身 | 撮るカメラ |
 /// |---|---|---|
@@ -12,13 +12,19 @@ using UnityEngine.UI;
 /// | BG_Ghost | 環境（収録視点） | GhostCamera / GhostReplayCamera |
 /// | Box_Other | Cone_Other のみ（透明背景） | LiveBoxCam |
 /// | Box_Self | Cone_Self のみ（透明背景） | GhostBoxCam |
+/// | Box_Guide | Cone_SelfRef のみ（透明背景） | GuideBoxCam |
 ///
 /// | チャンネル | 選択肢 |
 /// |---|---|
 /// | 背景 | Live固定 / Ghost固定 / 矩形波交替(f_bg) / 4ストローク(f_bg, 極性) |
 /// | 箱 | Off / Other固定 / Self固定 / 矩形波交替(f_box) / 4ストローク(f_box, 極性) |
+/// | ガイド | Off / 近い箱固定 / 的固定 / 矩形波交替(f_guide) / 4ストローク(f_guide, 極性) |
 ///
 /// 周波数・極性はチャンネルごとに独立．デューティ比は 50% 固定．
+/// **箱チャンネル**（Cone_Other⇔Cone_Self，相互のワブル用）と**ガイドチャンネル**
+/// （Cone_Other⇔Cone_SelfRef，近い箱を的に合わせ込むための誘導用）は互いに独立しており，
+/// 同時に有効化しても一方が他方のテクスチャ・位相を書き換えることはない
+/// （ガイドの「近い箱」入力は Box_Other をそのまま再利用するが，読み取るだけ）．
 /// </summary>
 /// <remarks>
 /// - <b>既存の ViewSwitcher の単一テクスチャ経路は変更していない</b>．この合成器が有効な間だけ
@@ -74,6 +80,14 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("Cone_Self のみ（透明背景・アルファ付き）= Box_Self RT")]
     public Texture boxSelfTexture;
 
+    /// <summary>
+    /// Cone_SelfRef（自分基準の完全固定リファレンス）のみを描いた透明背景の RenderTexture．
+    /// ガイドチャンネル（下記）専用の入力。<see cref="boxOtherTexture"/> と組み合わせて
+    /// 「近い箱（Cone_Other）⇔的（Cone_SelfRef）」の4ストロークを作る（09 §3.7）。
+    /// </summary>
+    [Tooltip("Cone_SelfRef のみ（透明背景・アルファ付き）= Box_Guide RT。ガイドチャンネル専用")]
+    public Texture guideTargetTexture;
+
     [Header("出力・連携先")]
     /// <summary>合成結果を表示する UI（CenterRawImage / ReplayRawImage）</summary>
     [Tooltip("合成結果を表示するRawImage")]
@@ -107,6 +121,13 @@ public class ChannelCompositor : MonoBehaviour
     /// </summary>
     [Tooltip("Box_Self を撮る箱カメラ（Recordモード等で無効化されるため参照する）")]
     public Camera ghostBoxCamera;
+
+    /// <summary>
+    /// Box_Guide（Cone_SelfRef）を撮っているカメラ．非アクティブのときは古いフレームが
+    /// 残るため，ガイドチャンネルの的側の重みを 0 にする（liveBoxCamera 等と同じ理由）．
+    /// </summary>
+    [Tooltip("Box_Guide（Cone_SelfRef）を撮るカメラ（非アクティブ時に古いフレームを出さないために参照する）")]
+    public Camera guideBoxCamera;
 
     [Header("背景チャンネル")]
     /// <summary>背景の提示条件</summary>
@@ -155,6 +176,42 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("箱の輝度変調量 Δ（0-1輝度、既定0.35）")]
     [Range(0f, 1f)] public float boxDelta = 0.35f;
 
+    [Header("ガイドチャンネル（近い箱⇔的, 拡張 09 §3.7）")]
+    /// <summary>
+    /// ガイドチャンネルの提示条件．<see cref="BoxMode"/> をそのまま流用する
+    /// （Other=近い箱(Cone_Other) / Self=的(Cone_SelfRef)）．
+    /// 既存の「箱チャンネル」（Cone_Other⇔Cone_Self）とは完全に独立しており，
+    /// 同時に併用しても互いのテクスチャ・位相を書き換えない．
+    /// 既定 SelfFixed（的を常時表示）は Cone_SelfRef 導入時点の見た目と同じ．
+    /// </summary>
+    [Tooltip("ガイドチャンネルの提示条件（Other=近い箱=Cone_Other / Self=的=Cone_SelfRef）。箱チャンネルとは独立")]
+    public BoxMode guideMode = BoxMode.SelfFixed;
+
+    /// <summary>
+    /// ガイドチャンネルの4ストローク極性（guideMode = FourStroke のときのみ有効）．
+    /// Enhance＝近い箱→的の方向へ引き込む信号，Reversal＝逆方向（抵抗），
+    /// Zero＝運動信号なし（輝度反転フリッカーのみの統制条件）．
+    /// A=近い箱／B=的の割り当てなので，Enhance/Reversal のラベルの向きは
+    /// パイロットで見えを確認すること（既存の箱4ストロークと同じ注意点）．
+    /// </summary>
+    [Tooltip("ガイドチャンネルの4ストローク極性（Enhance=近い箱→的に引き込む/Reversal=逆/Zero=統制）")]
+    public FourStrokeCompositor.Polarity guidePolarity = FourStrokeCompositor.Polarity.Zero;
+
+    /// <summary>f_guide を f_bg に同期させるか（既定ON。箱チャンネルと同じ流儀）</summary>
+    [Tooltip("f_guide を f_bg に同期させるか（既定ON）")]
+    public bool syncGuideFreqToBg = true;
+
+    /// <summary>ガイドチャンネルの切替周波数 f_guide[Hz]（syncGuideFreqToBg = OFF のときのみ有効）</summary>
+    [Tooltip("ガイドチャンネルの切替周波数 f_guide[Hz]（同期OFF時のみ有効）")]
+    [Range(0.1f, 10f)] public float guideFrequency = 1f;
+
+    /// <summary>
+    /// ガイドチャンネルの輝度変調量 Δ．箱チャンネルと同じ式 final += guideMask × sign × Δ
+    /// で既存の合成結果に<b>加算</b>される（箱チャンネルの結果には影響しない）．
+    /// </summary>
+    [Tooltip("ガイドチャンネルの輝度変調量 Δ（0-1輝度、既定0.35）")]
+    [Range(0f, 1f)] public float guideDelta = 0.35f;
+
     [Header("シェーダ（未設定なら自動検索）")]
     /// <summary>合成シェーダ（Hidden/ChannelComposite）</summary>
     [Tooltip("合成シェーダ（Hidden/ChannelComposite。未設定なら自動検索）")]
@@ -172,6 +229,9 @@ public class ChannelCompositor : MonoBehaviour
     /// <summary>箱チャンネルで今どちらが支配的か（0 = Other, 1 = Self）</summary>
     public int BoxDominantSource { get; private set; }
 
+    /// <summary>ガイドチャンネルで今どちらが支配的か（0 = 近い箱=Cone_Other, 1 = 的=Cone_SelfRef）</summary>
+    public int GuideDominantSource { get; private set; }
+
     /// <summary>実際に使っている f_bg[Hz]</summary>
     public float BgFrequency
     {
@@ -184,6 +244,12 @@ public class ChannelCompositor : MonoBehaviour
         get { return syncBoxFreqToBg ? BgFrequency : boxFrequency; }
     }
 
+    /// <summary>実際に使っている f_guide[Hz]</summary>
+    public float GuideFrequency
+    {
+        get { return syncGuideFreqToBg ? BgFrequency : guideFrequency; }
+    }
+
     /// <summary>別色モードが有効か（どちらかの錐が別色モードなら true）</summary>
     public bool DualColorActive
     {
@@ -194,9 +260,10 @@ public class ChannelCompositor : MonoBehaviour
         }
     }
 
-    // 背景用・箱用の位相は完全に独立して進む
+    // 背景用・箱用・ガイド用の位相は完全に独立して進む
     private readonly ChannelPhase bgPhase = new ChannelPhase();
     private readonly ChannelPhase boxPhase = new ChannelPhase();
+    private readonly ChannelPhase guidePhase = new ChannelPhase();
 
     private Material material;
     private bool switcherWasEnabled;
@@ -239,15 +306,17 @@ public class ChannelCompositor : MonoBehaviour
     }
 
     /// <summary>
-    /// 両チャンネルの提示位相をリセットする（試行開始時に呼ぶ）．
-    /// 背景はライブ提示から，箱は Other 提示から始まる．
+    /// 全チャンネルの提示位相をリセットする（試行開始時に呼ぶ）．
+    /// 背景はライブ提示から，箱・ガイドはそれぞれ Other/近い箱 提示から始まる．
     /// </summary>
     public void ResetPhase()
     {
         bgPhase.Reset(WaveformOf(bgMode));
         boxPhase.Reset(WaveformOf(boxMode));
+        guidePhase.Reset(WaveformOf(guideMode));
         CurrentSource = (bgMode == BackgroundMode.GhostFixed) ? 1 : 0;
         BoxDominantSource = (boxMode == BoxMode.SelfFixed) ? 1 : 0;
+        GuideDominantSource = (guideMode == BoxMode.SelfFixed) ? 1 : 0;
 
         // 箱の姿勢フィルタ（LPF）も揃えてリセットし，開始直後の過渡応答を出さない
         if (coneOther != null) coneOther.ResetPose();
@@ -321,6 +390,36 @@ public class ChannelCompositor : MonoBehaviour
         if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled) boxWeightOther = 0f;
         if (ghostBoxCamera != null && !ghostBoxCamera.isActiveAndEnabled) boxWeightSelf = 0f;
 
+        // ---------- ガイドチャンネル（近い箱=Cone_Other ⇔ 的=Cone_SelfRef, 09 §3.7） ----------
+        // 箱チャンネルとは完全に独立（別の ChannelPhase・別のテクスチャ・別の合成項）。
+        // 近い箱の入力は既存の boxOtherTexture をそのまま再利用する（Cone_Other は
+        // 誤差ゼロ付近で遠断面が的と厳密に一致するため，近断面だけが運動信号を生む）
+        float guideWeightNear, guideWeightTarget, guideSign;
+        switch (guideMode)
+        {
+            case BoxMode.Off:
+                guideWeightNear = 0f; guideWeightTarget = 0f; guideSign = 1f;
+                break;
+            case BoxMode.OtherFixed:
+                guideWeightNear = 1f; guideWeightTarget = 0f; guideSign = 1f;
+                GuideDominantSource = 0;
+                break;
+            case BoxMode.SelfFixed:
+                guideWeightNear = 0f; guideWeightTarget = 1f; guideSign = 1f;
+                GuideDominantSource = 1;
+                break;
+            default: // SquareAlternate / FourStroke
+                guidePhase.Advance(dt, GuideFrequency, WaveformOf(guideMode), guidePolarity);
+                guideWeightNear = guidePhase.WeightA;
+                guideWeightTarget = guidePhase.WeightB;
+                guideSign = guidePhase.Inverted ? -1f : 1f;
+                GuideDominantSource = guidePhase.DominantSource;
+                break;
+        }
+
+        if (liveBoxCamera != null && !liveBoxCamera.isActiveAndEnabled) guideWeightNear = 0f;
+        if (guideBoxCamera != null && !guideBoxCamera.isActiveAndEnabled) guideWeightTarget = 0f;
+
         // ---------- 合成 ----------
         material.SetTexture("_BgLive", bgLiveTexture);
         material.SetTexture("_BgGhost", bgGhostTexture);
@@ -335,6 +434,12 @@ public class ChannelCompositor : MonoBehaviour
         material.SetFloat("_BoxSign", boxSign);
         material.SetFloat("_BoxDelta", boxDelta);
         material.SetFloat("_BoxColorBlend", DualColorActive ? 1f : 0f);
+        material.SetTexture("_GuideNear", boxOtherTexture != null ? boxOtherTexture : Texture2D.blackTexture);
+        material.SetTexture("_GuideTarget", guideTargetTexture != null ? guideTargetTexture : Texture2D.blackTexture);
+        material.SetFloat("_GuideWeightNear", guideWeightNear);
+        material.SetFloat("_GuideWeightTarget", guideWeightTarget);
+        material.SetFloat("_GuideSign", guideSign);
+        material.SetFloat("_GuideDelta", guideDelta);
         Graphics.Blit(null, OutputTexture, material);
 
         if (rawImage != null)
@@ -448,9 +553,14 @@ public class ChannelCompositor : MonoBehaviour
             + (boxMode == BoxMode.FourStroke ? " " + boxPolarity : "")
             + (boxMode == BoxMode.SquareAlternate || boxMode == BoxMode.FourStroke
                 ? " " + BoxFrequency.ToString("F1") + "Hz" : "");
+        string guide = guideMode.ToString()
+            + (guideMode == BoxMode.FourStroke ? " " + guidePolarity : "")
+            + (guideMode == BoxMode.SquareAlternate || guideMode == BoxMode.FourStroke
+                ? " " + GuideFrequency.ToString("F1") + "Hz" : "");
         GUI.Label(new Rect(Screen.width - 430, 10, 420, 20), "背景: " + bg);
         GUI.Label(new Rect(Screen.width - 430, 30, 420, 20),
             "箱: " + box + (DualColorActive ? "（別色モード）" : ""));
+        GUI.Label(new Rect(Screen.width - 430, 110, 420, 20), "ガイド(近い箱⇔的): " + guide);
 
         // 別色モードを自動無効化した場合は目立つように出す（条件の取り違えを防ぐ）
         if (dualColorAutoDisabled)

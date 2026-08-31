@@ -33,6 +33,12 @@ public class ConeGuide : MonoBehaviour
         Other,
         /// <summary>頂点＝自分（ライブ頭部）の視点．収録映像側にのみ描画される</summary>
         Self,
+        /// <summary>
+        /// 頂点＝観測者＝自分自身の完全固定リファレンス（Cone_SelfRef）．
+        /// Cone_Other とは別レイヤに置き，ガイド4ストロークチャンネルが
+        /// Cone_Other 側と独立に扱えるようにする（09 §3.7）．
+        /// </summary>
+        SelfRef,
     }
 
     [Header("追従対象")]
@@ -344,7 +350,13 @@ public class ConeGuide : MonoBehaviour
     /// </summary>
     private void ApplyLayer()
     {
-        int layer = (kind == ConeKind.Other) ? ConeGuideLayers.OtherLayer : ConeGuideLayers.SelfLayer;
+        int layer;
+        switch (kind)
+        {
+            case ConeKind.Other: layer = ConeGuideLayers.OtherLayer; break;
+            case ConeKind.SelfRef: layer = ConeGuideLayers.SelfRefLayer; break;
+            default: layer = ConeGuideLayers.SelfLayer; break;
+        }
         if (gameObject.layer != layer) gameObject.layer = layer;
     }
 

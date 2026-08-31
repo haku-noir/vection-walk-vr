@@ -19,11 +19,22 @@ public static class ConeGuideLayers
     /// <summary>Cone_Self（頂点＝ライブ頭部の視点）が乗るレイヤ名．収録映像側にのみ描画される</summary>
     public const string ConeSelfName = "ConeSelf";
 
+    /// <summary>
+    /// Cone_SelfRef（頂点＝観測者＝自分自身の完全固定リファレンス）が乗るレイヤ名．
+    /// Cone_Other とは別レイヤにすることで，箱チャンネル（Cone_Other/Cone_Self）と
+    /// ガイド4ストロークチャンネル（Cone_Other/Cone_SelfRef）が互いを巻き込まずに
+    /// 独立した入力を持てるようにする（09 §3.7）．
+    /// </summary>
+    public const string ConeSelfRefName = "ConeSelfRef";
+
     /// <summary>ConeOther の既定レイヤ番号（TagManager の空き枠）</summary>
     public const int ConeOtherIndex = 16;
 
     /// <summary>ConeSelf の既定レイヤ番号（TagManager の空き枠）</summary>
     public const int ConeSelfIndex = 17;
+
+    /// <summary>ConeSelfRef の既定レイヤ番号（TagManager の空き枠）</summary>
+    public const int ConeSelfRefIndex = 18;
 
     /// <summary>
     /// レイヤ名から番号を解決する（未登録なら既定番号にフォールバックし，警告を出す）
@@ -44,6 +55,9 @@ public static class ConeGuideLayers
     /// <summary>Cone_Self 用レイヤ番号</summary>
     public static int SelfLayer { get { return Resolve(ConeSelfName, ConeSelfIndex); } }
 
-    /// <summary>両レイヤを含むビットマスク（既存カメラから除外するときに使う）</summary>
-    public static int GuideMask { get { return (1 << OtherLayer) | (1 << SelfLayer); } }
+    /// <summary>Cone_SelfRef 用レイヤ番号</summary>
+    public static int SelfRefLayer { get { return Resolve(ConeSelfRefName, ConeSelfRefIndex); } }
+
+    /// <summary>3レイヤすべてを含むビットマスク（既存カメラから除外するときに使う）</summary>
+    public static int GuideMask { get { return (1 << OtherLayer) | (1 << SelfLayer) | (1 << SelfRefLayer); } }
 }
