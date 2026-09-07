@@ -176,7 +176,10 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 | 2 | `ConeGuide.cs`: 遠断面のFar At Infinityを左目/右目別メッシュに分岐（ConeSelfFarLeft/Right含む） | 完了 |
 | 3 | `ChannelCompositor.cs`: `mirrorFrom`パターンで提示条件を左右共有 | 完了 |
 | 4 | `ConeGuideSceneUpgrader.cs`: 左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線 | 完了（ViewpointFollowing.unityのみ対応） |
-| 5 | `ViewpointFollowingSceneBuilder.cs`: `usePerEyeCameras`解除・Canvas有効化 | 未着手 |
+| 5 | `ViewpointFollowingSceneBuilder.cs`: `usePerEyeCameras`解除・Canvas有効化 | 完了 |
+
+当初計画していた5段階はすべて完了した。段階4・5の実装過程で新たに判明した残作業は
+§6.1・§6.2にまとめる。
 
 ### 6.1 段階4（ConeGuideSceneUpgrader.cs）実装時に判明した追加事項
 
@@ -206,3 +209,21 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
    ChannelCompositorにのみ配線されており，右目側の有効/無効は追随しない。
    `FollowingExperimentManager.cs`等の側で右目用の参照も持たせ，切替時に両方へ反映する
    対応が別途必要（次のコミットで対応予定）
+
+### 6.2 段階5（ViewpointFollowingSceneBuilder.cs）実装時に判明した追加事項
+
+1. **`SetupPlayerPipeline` は4ストローク歩行シーンとも共用の関数だった**。当初「単純に
+   `usePerEyeCameras`を解除するだけ」と見立てていたが，この関数は`BuildScene()`
+   （視点追従実験）と`BuildFourStrokeScene()`（4ストローク歩行シーン，本仕様のスコープ外）
+   の両方から呼ばれる共用ヘルパーだった。無条件に両眼化すると4ストローク歩行シーンの
+   単眼パイプラインを壊してしまうため，`bool stereo`引数を追加し，視点追従実験側だけ
+   `true`を渡すように変更した
+2. **CenterCanvasを無効化すべきかは未検証**。`usePerEyeCameras=true`にした際，単眼時代の
+   `CenterCanvas`（`CenterEyeAnchor`のカメラで描画）とLeftCanvas/RightCanvasが同時に
+   有効なままだと二重表示が起きる可能性を考慮し，`CenterCanvas`を明示的に無効化する
+   処理を追加した。ただし実機でこの組合せを検証したわけではないため，実際に問題が
+   出るかどうか・無効化で十分かは初回のHMD確認時に要チェック
+3. **再生確認シーン（ViewpointFollowingReplay.unity）はこの関数を使っていない**ことを
+   確認した（`BuildReplayScene()`は別経路で「通常カメラ・HMD不要」の構成を組んでおり，
+   `SetupPlayerPipeline`を呼ばない）。6.1-4の「再生確認シーンは今回のスコープ外」という
+   判断と整合しており，今回の変更で影響を受けない

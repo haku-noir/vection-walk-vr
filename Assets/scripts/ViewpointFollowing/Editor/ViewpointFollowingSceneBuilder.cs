@@ -14,6 +14,12 @@ using UnityEngine.UI;
 /// - ExperimentRig（実験管理・収録・再生・切替・記録の各スクリプト，参照配線済み）
 /// - 歩行コース環境（高密度/低密度の切替可能なオブジェクト群，床，開始/終了マーカー）
 /// - PostProcessVolume（停止中の視野マスク用）
+///
+/// <b>視点追従実験（<see cref="BuildScene"/>）は両眼立体視で構築する</b>（10 仕様）。
+/// 生成後は「Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加」
+/// （<see cref="ConeGuideSceneUpgrader"/>）を実行して，四角錐ガイドと左右の
+/// ChannelCompositor 一式を配線すること。4ストローク歩行シーン
+/// （<see cref="BuildFourStrokeScene"/>）は本仕様のスコープ外のため単眼のまま。
 /// </summary>
 public static class ViewpointFollowingSceneBuilder
 {
@@ -71,10 +77,12 @@ public static class ViewpointFollowingSceneBuilder
         }
 
         // --- 4. Player プレハブを配置し，不要な機能を無効化 ---
+        // 視点追従実験は両眼立体視化する（10 仕様）
         Transform centerEyeAnchor;
         Camera captureCam;
         RawImage centerRawImage;
-        GameObject player = SetupPlayerPipeline(out centerEyeAnchor, out captureCam, out centerRawImage);
+        GameObject player = SetupPlayerPipeline(stereo: true,
+            out centerEyeAnchor, out captureCam, out centerRawImage);
         if (player == null) return;
 
         // --- 5. GhostCamera（収録映像の再レンダリング用カメラ）を作成 ---
@@ -302,10 +310,12 @@ public static class ViewpointFollowingSceneBuilder
         BuildEnvironment(out envRich, out envSparse);
 
         // --- 3. Player プレハブを配置（収録映像用の GhostCamera/PlaybackEye は不要） ---
+        // 4ストローク歩行シーンは本仕様のスコープ外のため単眼のまま（10 仕様は視点追従実験のみ対象）
         Transform centerEyeAnchor;
         Camera captureCam;
         RawImage centerRawImage;
-        GameObject player = SetupPlayerPipeline(out centerEyeAnchor, out captureCam, out centerRawImage);
+        GameObject player = SetupPlayerPipeline(stereo: false,
+            out centerEyeAnchor, out captureCam, out centerRawImage);
         if (player == null) return;
 
         // --- 4. PostProcessVolume（停止中の視野マスク）を配置 ---
@@ -367,8 +377,14 @@ public static class ViewpointFollowingSceneBuilder
     /// 映像パイプラインの構成要素（頭部アンカー・撮影カメラ・視野RawImage）を取り出す．
     /// 実験シーンと4ストローク歩行シーンで共用する．
     /// </summary>
+    /// <param name="stereo">
+    /// true にすると両眼立体視（10 仕様）用に <c>usePerEyeCameras</c> を有効化し，
+    /// LeftCanvas/RightCanvas を有効化・CenterCanvas を無効化する。false（既定の単眼）は
+    /// 従来どおり中央系のみを使う。4ストローク歩行シーンは本仕様のスコープ外のため
+    /// 常に false を渡す
+    /// </param>
     /// <returns>配置した Player（失敗時はダイアログを表示して null）</returns>
-    private static GameObject SetupPlayerPipeline(
+    private static GameObject SetupPlayerPipeline(bool stereo,
         out Transform centerEyeAnchor, out Camera captureCam, out RawImage centerRawImage)
     {
         centerEyeAnchor = null;
@@ -394,12 +410,27 @@ public static class ViewpointFollowingSceneBuilder
         }
         foreach (var charCtrl in player.GetComponentsInChildren<CharacterController>(true)) charCtrl.enabled = false;
 
-        // 両眼視差は既存実験と同様に非対応（中央系のみ使用）
+        // 両眼立体視化（10 仕様，視点追従実験のみ対象）: 中央系ではなく左目/右目の実カメラで
+        // 個別にレンダリングする。単眼だった当初は「両眼視差は既存実験と同様に非対応」として
+        // いたが，10 仕様の検討で両眼視差を使わない設計であることが前後多義性の原因の一つと
+        // 判明し，視点追従実験については方針を転換した（4ストローク歩行シーンは対象外）
         var rig = player.GetComponentInChildren<OVRCameraRig>(true);
-        if (rig != null) rig.usePerEyeCameras = false;
-        // 左右眼用の Canvas は SetReversion を無効化した代わりに明示的に消しておく
-        SetActiveIfFound(player.transform, "LeftCanvas", false);
-        SetActiveIfFound(player.transform, "RightCanvas", false);
+        if (rig != null) rig.usePerEyeCameras = stereo;
+        if (stereo)
+        {
+            // 左右眼用の Canvas を有効化する（ConeGuideSceneUpgrader が実際の合成結果を配線する）
+            SetActiveIfFound(player.transform, "LeftCanvas", true);
+            SetActiveIfFound(player.transform, "RightCanvas", true);
+            // 単眼時代の CenterCanvas は今後使わないため無効化する（LeftCanvas/RightCanvas との
+            // 二重表示を避けるため。実機で確認済みではないので，問題が出る場合は要調整）
+            SetActiveIfFound(player.transform, "CenterCanvas", false);
+        }
+        else
+        {
+            // 従来どおり中央系のみを使う（左右眼用の Canvas は明示的に消しておく）
+            SetActiveIfFound(player.transform, "LeftCanvas", false);
+            SetActiveIfFound(player.transform, "RightCanvas", false);
+        }
 
         // 映像パイプラインの構成要素を取得
         centerEyeAnchor = FindDeep(player.transform, "CenterEyeAnchor");
