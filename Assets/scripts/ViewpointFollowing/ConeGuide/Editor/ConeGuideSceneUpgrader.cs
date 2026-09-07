@@ -1,31 +1,39 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.Experimental.Rendering;
 using UnityEngine.SceneManagement;
+using UnityEngine.UI;
 
 /// <summary>
 /// 四角錐ガイド（09 仕様）を<b>現在開いているシーンに追加</b>するエディタスクリプト．
 ///
 /// 既存のシーン生成メニュー（ViewpointFollowingSceneBuilder）とは独立しており，
 /// <b>既存シーンを作り直さない</b>（上書き生成しない）．すでに構築済みの
-/// ViewpointFollowing.unity / ViewpointFollowingReplay.unity に対して，
-/// 足りない要素だけを差分で足していく（何度実行しても重複しない＝冪等）．
+/// ViewpointFollowing.unity に対して，足りない要素だけを差分で足していく
+/// （何度実行しても重複しない＝冪等）．
 ///
 /// メニュー: Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加
 /// </summary>
 /// <remarks>
-/// M1 で行うこと:
-/// - レイヤ ConeOther / ConeSelf を ProjectSettings/TagManager.asset に登録
-/// - Cone_Other（頂点＝収録軌跡の視点）/ Cone_Self（頂点＝ライブ頭部）を作成し追従対象を配線
-/// - 既存カメラの Culling Mask から両レイヤを除外する
+/// 10 仕様（両眼立体視化）に伴い，このスクリプトは<b>左目用・右目用の完全な2セット</b>
+/// （背景カメラ・箱カメラ・ガイドカメラ・RenderTexture・ChannelCompositor）を配線するよう
+/// 全面的に書き換えた．
 ///
-/// M2 で行うこと:
-/// - 箱用 RenderTexture（Box_Other / Box_Self，アルファ付き・深度付き）を用意
-/// - LiveBoxCam / GhostBoxCam を各背景カメラの子として作成（透明クリア・該当レイヤのみ）
-/// - ChannelCompositor を ViewSwitcher と同じオブジェクトに追加し，4入力を配線
-///   （<b>既定は無効</b>．有効にしたときだけ新しい2チャンネル合成経路に切り替わる）
+/// <b>両眼立体視インフラの出どころ</b>（10 §2.6）: <c>LeftEyeCapture</c> / <c>RightEyeCapture</c> /
+/// <c>LeftEyeAnchor</c> / <c>RightEyeAnchor</c> / <c>LeftRawImage</c> / <c>RightRawImage</c> は
+/// Player.prefab（<c>OVRCameraRig</c> を含む）に元々存在する休眠中のオブジェクトを再利用する
+/// （別実験 ReversedVision 用に作られたもの）．制御コード（SetReversion.cs 等）には依存せず，
+/// このスクリプトが独自に配線し直す．
+///
+/// <b>収録視点（GhostCamera）側の左右分離</b>は，GhostCamera が OVRCameraRig の一部ではなく
+/// 実機IPDを持たないため，新設した <see cref="GhostEyeOffset"/> がライブ側の実測IPDを
+/// 毎フレーム収録視点側の左目用・右目用カメラへ反映する．
+///
+/// <b>現時点では ViewpointFollowing.unity（HMD実験シーン）のみ対応</b>．再生確認シーン
+/// （ViewpointFollowingReplay.unity）は OVRCameraRig を持たないため，両眼化は別途対応が必要
+/// （10 仕様 §2.8 は決定事項だが，具体的な実装は未着手）．
 ///
 /// シーンは自動保存しない（既存シーンを勝手に上書きしないため）．
 /// 内容を確認してから手動で保存すること．
@@ -39,33 +47,85 @@ public static class ConeGuideSceneUpgrader
     private const string ChannelCompositeShaderPath =
         "Assets/scripts/ViewpointFollowing/ConeGuide/ChannelComposite.shader";
 
-    // 箱用 RenderTexture（ライブ映像用 CenterEye の複製として作る＝解像度・形式を揃える）
-    private const string LiveRTPath = "Assets/Textures/CenterEye.renderTexture";
-    private const string BoxOtherRTPath = "Assets/Textures/BoxOther.renderTexture";
-    private const string BoxSelfRTPath = "Assets/Textures/BoxSelf.renderTexture";
+    // RenderTexture の複製元テンプレート（解像度・形式を揃える）
+    private const string LiveRTTemplatePath = "Assets/Textures/CenterEye.renderTexture";
 
-    /// <summary>ガイドチャンネル用: Cone_Other 近断面のみを撮る RT（09 §3.7 拡張）</summary>
-    private const string BoxOtherNearRTPath = "Assets/Textures/BoxOtherNear.renderTexture";
-    /// <summary>ガイドチャンネル用: Cone_Other 遠断面のみを撮る RT（09 §3.7 拡張）</summary>
-    private const string BoxOtherFarRTPath = "Assets/Textures/BoxOtherFar.renderTexture";
-    /// <summary>ガイドチャンネル用: Cone_Other 稜線のみを撮る RT（09 §3.7 拡張）</summary>
-    private const string BoxOtherRidgeRTPath = "Assets/Textures/BoxOtherRidge.renderTexture";
+    // 箱チャンネル用 RenderTexture（Cone_Other 全体 / Cone_Self）
+    private const string LeftBoxOtherRTPath = "Assets/Textures/LeftBoxOther.renderTexture";
+    private const string RightBoxOtherRTPath = "Assets/Textures/RightBoxOther.renderTexture";
+    private const string LeftBoxSelfRTPath = "Assets/Textures/LeftBoxSelf.renderTexture";
+    private const string RightBoxSelfRTPath = "Assets/Textures/RightBoxSelf.renderTexture";
 
-    private const string LiveBoxCamName = "LiveBoxCam";
-    private const string GhostBoxCamName = "GhostBoxCam";
-    private const string LiveBoxNearCamName = "LiveBoxNearCam";
-    private const string LiveBoxFarCamName = "LiveBoxFarCam";
-    private const string LiveBoxRidgeCamName = "LiveBoxRidgeCam";
+    // ガイドチャンネル用 RenderTexture（近断面/遠断面/稜線）
+    private const string LeftBoxOtherNearRTPath = "Assets/Textures/LeftBoxOtherNear.renderTexture";
+    private const string RightBoxOtherNearRTPath = "Assets/Textures/RightBoxOtherNear.renderTexture";
+    private const string LeftBoxOtherFarRTPath = "Assets/Textures/LeftBoxOtherFar.renderTexture";
+    private const string RightBoxOtherFarRTPath = "Assets/Textures/RightBoxOtherFar.renderTexture";
+    private const string LeftBoxOtherRidgeRTPath = "Assets/Textures/LeftBoxOtherRidge.renderTexture";
+    private const string RightBoxOtherRidgeRTPath = "Assets/Textures/RightBoxOtherRidge.renderTexture";
 
-    /// <summary>箱カメラの名前（M2 で追加．Culling Mask の除外対象から外すために使う）</summary>
+    // 収録視点（GhostCamera）側の背景用 RenderTexture（ライブ側は既存 LeftEye/RightEye を再利用）
+    private const string LeftPlaybackEyeRTPath = "Assets/Textures/LeftPlaybackEye.renderTexture";
+    private const string RightPlaybackEyeRTPath = "Assets/Textures/RightPlaybackEye.renderTexture";
+
+    // Player.prefab（OVRCameraRig）内に既に存在する両眼インフラの名前（10 §2.6）
+    private const string LeftEyeCaptureName = "LeftEyeCapture";
+    private const string RightEyeCaptureName = "RightEyeCapture";
+    private const string LeftEyeAnchorName = "LeftEyeAnchor";
+    private const string RightEyeAnchorName = "RightEyeAnchor";
+    private const string LeftRawImageName = "LeftRawImage";
+    private const string RightRawImageName = "RightRawImage";
+
+    // 新設する収録視点側の左目用・右目用カメラ（GhostCamera の子）
+    private const string LeftGhostCameraName = "LeftGhostCamera";
+    private const string RightGhostCameraName = "RightGhostCamera";
+
+    // 箱・ガイド用カメラの名前（Left/Right 前置，10 §2.9 命名規則）
+    private const string LeftLiveBoxCamName = "LeftLiveBoxCam";
+    private const string RightLiveBoxCamName = "RightLiveBoxCam";
+    private const string LeftGhostBoxCamName = "LeftGhostBoxCam";
+    private const string RightGhostBoxCamName = "RightGhostBoxCam";
+    private const string LeftLiveBoxNearCamName = "LeftLiveBoxNearCam";
+    private const string RightLiveBoxNearCamName = "RightLiveBoxNearCam";
+    private const string LeftLiveBoxFarCamName = "LeftLiveBoxFarCam";
+    private const string RightLiveBoxFarCamName = "RightLiveBoxFarCam";
+    private const string LeftLiveBoxRidgeCamName = "LeftLiveBoxRidgeCam";
+    private const string RightLiveBoxRidgeCamName = "RightLiveBoxRidgeCam";
+
+    /// <summary>箱・ガイド用カメラの名前（Culling Mask の除外対象から外すために使う）</summary>
     private static readonly string[] BoxCameraNames =
-        { "LiveBoxCam", "GhostBoxCam", "LiveBoxNearCam", "LiveBoxFarCam", "LiveBoxRidgeCam" };
+    {
+        LeftLiveBoxCamName, RightLiveBoxCamName,
+        LeftGhostBoxCamName, RightGhostBoxCamName,
+        LeftLiveBoxNearCamName, RightLiveBoxNearCamName,
+        LeftLiveBoxFarCamName, RightLiveBoxFarCamName,
+        LeftLiveBoxRidgeCamName, RightLiveBoxRidgeCamName,
+    };
 
     /// <summary>ライブ視点のカメラ／頭部アンカーの候補名（実験シーン / 再生確認シーン）</summary>
     private static readonly string[] LiveAnchorNames = { "CenterEyeAnchor", "LiveReplayCamera" };
 
     /// <summary>収録視点のカメラの候補名（実験シーン / 再生確認シーン）</summary>
     private static readonly string[] GhostAnchorNames = { "GhostCamera", "GhostReplayCamera" };
+
+    /// <summary>片目分のチャンネル入力一式（10 仕様，両眼立体視化）</summary>
+    private struct EyeChannels
+    {
+        public GameObject host;
+        public RawImage rawImage;
+        public Texture bgLive;
+        public Texture bgGhost;
+        public RenderTexture boxOtherRT;
+        public RenderTexture boxSelfRT;
+        public RenderTexture boxOtherNearRT;
+        public RenderTexture boxOtherFarRT;
+        public RenderTexture boxOtherRidgeRT;
+        public Camera liveBoxCam;
+        public Camera ghostBoxCam;
+        public Camera liveBoxNearCam;
+        public Camera liveBoxFarCam;
+        public Camera liveBoxRidgeCam;
+    }
 
     [MenuItem("Tools/視点追従実験/錐ガイドを現在のシーンに追加")]
     public static void UpgradeCurrentScene()
@@ -80,10 +140,15 @@ public static class ConeGuideSceneUpgrader
         // --- 1. レイヤを登録する ---
         int otherLayer = EnsureLayer(ConeGuideLayers.ConeOtherName, ConeGuideLayers.ConeOtherIndex);
         int selfLayer = EnsureLayer(ConeGuideLayers.ConeSelfName, ConeGuideLayers.ConeSelfIndex);
-        // Cone_Other は近断面/遠断面/稜線の3レイヤに分割される（09 §3.7 拡張）
         int otherFarLayer = EnsureLayer(ConeGuideLayers.ConeOtherFarName, ConeGuideLayers.ConeOtherFarIndex);
         int otherRidgeLayer = EnsureLayer(ConeGuideLayers.ConeOtherRidgeName, ConeGuideLayers.ConeOtherRidgeIndex);
-        if (otherLayer < 0 || selfLayer < 0 || otherFarLayer < 0 || otherRidgeLayer < 0)
+        // Far At Infinity 用の左目/右目別レイヤ（10 §3.3 拡張。kind を問わず両方登録する）
+        int otherFarLeftLayer = EnsureLayer(ConeGuideLayers.ConeOtherFarLeftName, ConeGuideLayers.ConeOtherFarLeftIndex);
+        int otherFarRightLayer = EnsureLayer(ConeGuideLayers.ConeOtherFarRightName, ConeGuideLayers.ConeOtherFarRightIndex);
+        int selfFarLeftLayer = EnsureLayer(ConeGuideLayers.ConeSelfFarLeftName, ConeGuideLayers.ConeSelfFarLeftIndex);
+        int selfFarRightLayer = EnsureLayer(ConeGuideLayers.ConeSelfFarRightName, ConeGuideLayers.ConeSelfFarRightIndex);
+        if (otherLayer < 0 || selfLayer < 0 || otherFarLayer < 0 || otherRidgeLayer < 0
+            || otherFarLeftLayer < 0 || otherFarRightLayer < 0 || selfFarLeftLayer < 0 || selfFarRightLayer < 0)
         {
             EditorUtility.DisplayDialog("エラー",
                 "レイヤの空きが足りません。ProjectSettings > Tags and Layers を確認してください。", "OK");
@@ -100,7 +165,40 @@ public static class ConeGuideSceneUpgrader
                 "見つからなかったもの:\n" +
                 (liveAnchor == null ? "- ライブ視点（CenterEyeAnchor / LiveReplayCamera）\n" : "") +
                 (ghostAnchor == null ? "- 収録視点（GhostCamera / GhostReplayCamera）\n" : "") +
-                "\nViewpointFollowing.unity または ViewpointFollowingReplay.unity を開いて実行してください。",
+                "\nViewpointFollowing.unity を開いて実行してください。",
+                "OK");
+            return;
+        }
+        Camera ghostBgCam = ghostAnchor.GetComponent<Camera>();
+        if (ghostBgCam == null)
+        {
+            EditorUtility.DisplayDialog("エラー", "収録視点のカメラが見つかりません。", "OK");
+            return;
+        }
+
+        // --- 2.5. 両眼立体視インフラ（Player.prefab 内，10 §2.6）を探す ---
+        Camera leftEyeCaptureCam = FindCamera(scene, LeftEyeCaptureName);
+        Camera rightEyeCaptureCam = FindCamera(scene, RightEyeCaptureName);
+        Transform leftEyeAnchor = FindFirst(scene, new[] { LeftEyeAnchorName });
+        Transform rightEyeAnchor = FindFirst(scene, new[] { RightEyeAnchorName });
+        RawImage leftRawImage = FindRawImage(scene, LeftRawImageName);
+        RawImage rightRawImage = FindRawImage(scene, RightRawImageName);
+
+        if (leftEyeCaptureCam == null || rightEyeCaptureCam == null || leftEyeAnchor == null
+            || rightEyeAnchor == null || leftRawImage == null || rightRawImage == null)
+        {
+            EditorUtility.DisplayDialog("エラー",
+                "両眼立体視に必要なオブジェクトが見つかりません。\n\n" +
+                "見つからなかったもの:\n" +
+                (leftEyeCaptureCam == null ? "- LeftEyeCapture\n" : "") +
+                (rightEyeCaptureCam == null ? "- RightEyeCapture\n" : "") +
+                (leftEyeAnchor == null ? "- LeftEyeAnchor\n" : "") +
+                (rightEyeAnchor == null ? "- RightEyeAnchor\n" : "") +
+                (leftRawImage == null ? "- LeftRawImage\n" : "") +
+                (rightRawImage == null ? "- RightRawImage\n" : "") +
+                "\nこれらは Player.prefab（OVRCameraRig を含む）に含まれています。\n" +
+                "再生確認シーン（ViewpointFollowingReplay.unity）は OVRCameraRig を持たないため，\n" +
+                "現時点では両眼化に対応していません。ViewpointFollowing.unity を開いて実行してください。",
                 "OK");
             return;
         }
@@ -108,15 +206,11 @@ public static class ConeGuideSceneUpgrader
         Shader coneShader = AssetDatabase.LoadAssetAtPath<Shader>(ConeLineShaderPath);
 
         // --- 3. 錐を2つ用意する（既にあれば作り直さず配線だけ更新する） ---
-        // Cone_Other: 頂点＝収録軌跡の視点。ライブ映像側にのみ描画される
         ConeGuide coneOther = EnsureCone(scene, ConeOtherObjectName,
             ConeGuide.ConeKind.Other, otherLayer, ghostAnchor, coneShader);
-        // Cone_Self: 頂点＝ライブ頭部の視点。収録映像側にのみ描画される
         ConeGuide coneSelf = EnsureCone(scene, ConeSelfObjectName,
             ConeGuide.ConeKind.Self, selfLayer, liveAnchor, coneShader);
 
-        // 2つの錐は同じ見えでなければならない（片方だけ変えると誤差ゼロでも差が残る）。
-        // Cone_Self が Cone_Other から幾何・見た目・姿勢処理の条件を引く形にしておく
         if (coneSelf.mirrorFrom != coneOther)
         {
             Undo.RecordObject(coneSelf, "Sync cone parameters");
@@ -126,91 +220,161 @@ public static class ConeGuideSceneUpgrader
                 + "（以後は Cone_Other 側を編集してください）");
         }
 
-        // 近断面＝シアン／遠断面＝マゼンタの色分け（Dual Color Mode）を有効化する。
-        // Cone_Other 側で設定すれば mirrorFrom 経由で Cone_Self にも自動同期されるが、
-        // エディタ実行タイミングに依存させないためここで両方に明示しておく
         EnsureDualColor(coneOther);
         EnsureDualColor(coneSelf);
 
-        // --- 4. 箱用 RenderTexture（アルファ付き・深度付き）を用意する ---
-        RenderTexture boxOtherRT = EnsureBoxRenderTexture(BoxOtherRTPath);
-        RenderTexture boxSelfRT = EnsureBoxRenderTexture(BoxSelfRTPath);
-        // ガイドチャンネル用: 近断面のみ／遠断面のみ／稜線のみを個別に撮る RT（09 §3.7 拡張）
-        RenderTexture boxOtherNearRT = EnsureBoxRenderTexture(BoxOtherNearRTPath);
-        RenderTexture boxOtherFarRT = EnsureBoxRenderTexture(BoxOtherFarRTPath);
-        RenderTexture boxOtherRidgeRT = EnsureBoxRenderTexture(BoxOtherRidgeRTPath);
-        if (boxOtherRT == null || boxSelfRT == null || boxOtherNearRT == null
-            || boxOtherFarRT == null || boxOtherRidgeRT == null)
+        // --- 4. 収録視点側の左目用・右目用カメラを用意する（10 §2.6 拡張，新規） ---
+        RenderTexture leftPlaybackRT = EnsureBoxRenderTexture(LeftPlaybackEyeRTPath);
+        RenderTexture rightPlaybackRT = EnsureBoxRenderTexture(RightPlaybackEyeRTPath);
+        if (leftPlaybackRT == null || rightPlaybackRT == null)
         {
-            EditorUtility.DisplayDialog("エラー",
-                "箱用 RenderTexture を用意できませんでした。\n複製元: " + LiveRTPath, "OK");
+            EditorUtility.DisplayDialog("エラー", "収録視点用 RenderTexture を用意できませんでした。", "OK");
+            return;
+        }
+        Camera leftGhostCam = EnsureEnvironmentCamera(scene, LeftGhostCameraName, ghostAnchor, ghostBgCam,
+            ghostBgCam.cullingMask, leftPlaybackRT);
+        Camera rightGhostCam = EnsureEnvironmentCamera(scene, RightGhostCameraName, ghostAnchor, ghostBgCam,
+            ghostBgCam.cullingMask, rightPlaybackRT);
+
+        // GhostCamera は OVRCameraRig の一部ではなく実機IPDを持たないため，ライブ側の実測IPDを
+        // 毎フレーム反映する（10 §2.6 拡張）
+        EnsureGhostEyeOffset(ghostAnchor.gameObject, leftEyeAnchor, rightEyeAnchor,
+            leftGhostCam.transform, rightGhostCam.transform);
+
+        // ライブ側・収録側で環境の見え方（Culling Mask）を揃える
+        // （LeftEyeCapture/RightEyeCapture は別実験用に作られた休眠オブジェクトのため）
+        leftEyeCaptureCam.cullingMask = ghostBgCam.cullingMask;
+        rightEyeCaptureCam.cullingMask = ghostBgCam.cullingMask;
+        EditorUtility.SetDirty(leftEyeCaptureCam);
+        EditorUtility.SetDirty(rightEyeCaptureCam);
+
+        // --- 5. 箱用・ガイド用 RenderTexture を左右分用意する ---
+        RenderTexture leftBoxOtherRT = EnsureBoxRenderTexture(LeftBoxOtherRTPath);
+        RenderTexture rightBoxOtherRT = EnsureBoxRenderTexture(RightBoxOtherRTPath);
+        RenderTexture leftBoxSelfRT = EnsureBoxRenderTexture(LeftBoxSelfRTPath);
+        RenderTexture rightBoxSelfRT = EnsureBoxRenderTexture(RightBoxSelfRTPath);
+        RenderTexture leftBoxOtherNearRT = EnsureBoxRenderTexture(LeftBoxOtherNearRTPath);
+        RenderTexture rightBoxOtherNearRT = EnsureBoxRenderTexture(RightBoxOtherNearRTPath);
+        RenderTexture leftBoxOtherFarRT = EnsureBoxRenderTexture(LeftBoxOtherFarRTPath);
+        RenderTexture rightBoxOtherFarRT = EnsureBoxRenderTexture(RightBoxOtherFarRTPath);
+        RenderTexture leftBoxOtherRidgeRT = EnsureBoxRenderTexture(LeftBoxOtherRidgeRTPath);
+        RenderTexture rightBoxOtherRidgeRT = EnsureBoxRenderTexture(RightBoxOtherRidgeRTPath);
+        if (leftBoxOtherRT == null || rightBoxOtherRT == null || leftBoxSelfRT == null || rightBoxSelfRT == null
+            || leftBoxOtherNearRT == null || rightBoxOtherNearRT == null
+            || leftBoxOtherFarRT == null || rightBoxOtherFarRT == null
+            || leftBoxOtherRidgeRT == null || rightBoxOtherRidgeRT == null)
+        {
+            EditorUtility.DisplayDialog("エラー", "箱用 RenderTexture を用意できませんでした。", "OK");
             return;
         }
 
-        // --- 5. 箱カメラを背景カメラの子として作る（姿勢と投影を完全に一致させる） ---
-        Camera liveBgCam = FindLiveCaptureCamera(scene);
-        Camera ghostBgCam = ghostAnchor.GetComponent<Camera>();
-        if (liveBgCam == null || ghostBgCam == null)
+        // --- 6. 箱用・ガイド用カメラを左右分用意する ---
+        // 箱チャンネル（Box_Other）: 近断面+稜線は常時，遠断面は「Far At Infinity 無効時の
+        // ConeOtherFar」と「有効時のその目専用レイヤ」の両方を含めておく（同時に中身を持つのは
+        // 常にどちらか一方だけなので安全。10 §3.3.1 参照）
+        int otherBoxMaskLeft = (1 << otherLayer) | (1 << otherFarLayer) | (1 << otherRidgeLayer) | (1 << otherFarLeftLayer);
+        int otherBoxMaskRight = (1 << otherLayer) | (1 << otherFarLayer) | (1 << otherRidgeLayer) | (1 << otherFarRightLayer);
+        int selfBoxMaskLeft = (1 << selfLayer) | (1 << selfFarLeftLayer);
+        int selfBoxMaskRight = (1 << selfLayer) | (1 << selfFarRightLayer);
+        // ガイドチャンネルの遠断面入力も同様に，その目専用レイヤを含める
+        int otherFarGuideMaskLeft = (1 << otherFarLayer) | (1 << otherFarLeftLayer);
+        int otherFarGuideMaskRight = (1 << otherFarLayer) | (1 << otherFarRightLayer);
+
+        Camera leftLiveBoxCam = EnsureBoxCamera(scene, LeftLiveBoxCamName, leftEyeCaptureCam, otherBoxMaskLeft, leftBoxOtherRT);
+        Camera rightLiveBoxCam = EnsureBoxCamera(scene, RightLiveBoxCamName, rightEyeCaptureCam, otherBoxMaskRight, rightBoxOtherRT);
+        Camera leftGhostBoxCam = EnsureBoxCamera(scene, LeftGhostBoxCamName, leftGhostCam, selfBoxMaskLeft, leftBoxSelfRT);
+        Camera rightGhostBoxCam = EnsureBoxCamera(scene, RightGhostBoxCamName, rightGhostCam, selfBoxMaskRight, rightBoxSelfRT);
+
+        Camera leftLiveBoxNearCam = EnsureBoxCamera(scene, LeftLiveBoxNearCamName, leftEyeCaptureCam, 1 << otherLayer, leftBoxOtherNearRT);
+        Camera rightLiveBoxNearCam = EnsureBoxCamera(scene, RightLiveBoxNearCamName, rightEyeCaptureCam, 1 << otherLayer, rightBoxOtherNearRT);
+        Camera leftLiveBoxFarCam = EnsureBoxCamera(scene, LeftLiveBoxFarCamName, leftEyeCaptureCam, otherFarGuideMaskLeft, leftBoxOtherFarRT);
+        Camera rightLiveBoxFarCam = EnsureBoxCamera(scene, RightLiveBoxFarCamName, rightEyeCaptureCam, otherFarGuideMaskRight, rightBoxOtherFarRT);
+        Camera leftLiveBoxRidgeCam = EnsureBoxCamera(scene, LeftLiveBoxRidgeCamName, leftEyeCaptureCam, 1 << otherRidgeLayer, leftBoxOtherRidgeRT);
+        Camera rightLiveBoxRidgeCam = EnsureBoxCamera(scene, RightLiveBoxRidgeCamName, rightEyeCaptureCam, 1 << otherRidgeLayer, rightBoxOtherRidgeRT);
+
+        // --- 6.5. Far At Infinity 用の Observer（この錐を実際に描画する左右カメラ）を配線する ---
+        // Cone_Other はライブ視野（LeftLiveBoxCam/RightLiveBoxCam），
+        // Cone_Self は収録視野（LeftGhostBoxCam/RightGhostBoxCam）に描かれる
+        WireObservers(coneOther, leftLiveBoxCam.transform, rightLiveBoxCam.transform);
+        WireObservers(coneSelf, leftGhostBoxCam.transform, rightGhostBoxCam.transform);
+
+        // --- 7. ChannelCompositor を左目用・右目用にそれぞれ用意する（既定は無効） ---
+        List<ViewSwitcher> switchers = CollectComponents<ViewSwitcher>(scene);
+        ViewSwitcher switcher = switchers.Count > 0 ? switchers[0] : null;
+        if (switcher == null)
         {
-            EditorUtility.DisplayDialog("エラー",
-                "背景カメラが見つかりません（ライブ: CenterEyeCapture / LiveReplayCamera、"
-                + "収録: GhostCamera / GhostReplayCamera）。", "OK");
-            return;
+            Debug.LogWarning("[ConeGuideSceneUpgrader] ViewSwitcher が見つからないため f_bg の共有元が未設定です"
+                + "（ChannelCompositor.bgFrequencyFallback が使われます）");
         }
-        // LiveBoxCam（箱チャンネル用）は Cone_Other 全体（近断面+遠断面+稜線）を映す。
-        // 分割前と見えを変えないための後方互換マスク
-        int otherFullMask = (1 << otherLayer) | (1 << otherFarLayer) | (1 << otherRidgeLayer);
-        Camera liveBoxCam = EnsureBoxCamera(scene, LiveBoxCamName, liveBgCam, otherFullMask, boxOtherRT);
-        Camera ghostBoxCam = EnsureBoxCamera(scene, GhostBoxCamName, ghostBgCam, 1 << selfLayer, boxSelfRT);
-        // ガイドチャンネル用: 近断面のみ／遠断面のみ／稜線のみを個別に撮る専用カメラ（09 §3.7 拡張）
-        Camera liveBoxNearCam = EnsureBoxCamera(scene, LiveBoxNearCamName, liveBgCam, 1 << otherLayer, boxOtherNearRT);
-        Camera liveBoxFarCam = EnsureBoxCamera(scene, LiveBoxFarCamName, liveBgCam, 1 << otherFarLayer, boxOtherFarRT);
-        Camera liveBoxRidgeCam = EnsureBoxCamera(scene, LiveBoxRidgeCamName, liveBgCam, 1 << otherRidgeLayer, boxOtherRidgeRT);
 
-        // --- 5.5. Far At Infinity 用の Observer（この錐を実際に描画するカメラ）を配線する ---
-        // Cone_Other はライブ視野（LiveBoxCam）に，Cone_Self は収録視野（GhostBoxCam）に描かれる
-        WireObserver(coneOther, liveBoxCam.transform);
-        WireObserver(coneSelf, ghostBoxCam.transform);
+        var leftChannels = new EyeChannels
+        {
+            host = leftRawImage.gameObject,
+            rawImage = leftRawImage,
+            bgLive = leftEyeCaptureCam.targetTexture,
+            bgGhost = leftPlaybackRT,
+            boxOtherRT = leftBoxOtherRT,
+            boxSelfRT = leftBoxSelfRT,
+            boxOtherNearRT = leftBoxOtherNearRT,
+            boxOtherFarRT = leftBoxOtherFarRT,
+            boxOtherRidgeRT = leftBoxOtherRidgeRT,
+            liveBoxCam = leftLiveBoxCam,
+            ghostBoxCam = leftGhostBoxCam,
+            liveBoxNearCam = leftLiveBoxNearCam,
+            liveBoxFarCam = leftLiveBoxFarCam,
+            liveBoxRidgeCam = leftLiveBoxRidgeCam,
+        };
+        var rightChannels = new EyeChannels
+        {
+            host = rightRawImage.gameObject,
+            rawImage = rightRawImage,
+            bgLive = rightEyeCaptureCam.targetTexture,
+            bgGhost = rightPlaybackRT,
+            boxOtherRT = rightBoxOtherRT,
+            boxSelfRT = rightBoxSelfRT,
+            boxOtherNearRT = rightBoxOtherNearRT,
+            boxOtherFarRT = rightBoxOtherFarRT,
+            boxOtherRidgeRT = rightBoxOtherRidgeRT,
+            liveBoxCam = rightLiveBoxCam,
+            ghostBoxCam = rightGhostBoxCam,
+            liveBoxNearCam = rightLiveBoxNearCam,
+            liveBoxFarCam = rightLiveBoxFarCam,
+            liveBoxRidgeCam = rightLiveBoxRidgeCam,
+        };
 
-        // --- 6. ChannelCompositor を用意して配線する（既定は無効） ---
-        string compositorNote = EnsureCompositor(scene, coneOther, coneSelf,
-            boxOtherRT, boxSelfRT, boxOtherNearRT, boxOtherFarRT, boxOtherRidgeRT,
-            liveBoxCam, ghostBoxCam, liveBoxNearCam, liveBoxFarCam, liveBoxRidgeCam);
+        // 左目側をマスターとし，右目側は mirrorFrom で提示条件を引く（10 §2.7）
+        ChannelCompositor leftCompositor = EnsureCompositorForEye("左目", leftChannels,
+            coneOther, coneSelf, switcher, null);
+        ChannelCompositor rightCompositor = EnsureCompositorForEye("右目", rightChannels,
+            coneOther, coneSelf, switcher, leftCompositor);
 
-        // --- 7. 既存カメラの Culling Mask から全レイヤを除外する ---
+        // 実験制御・ロガーは左目側（マスター）に配線する。有効/無効の切替を両目に反映する
+        // 仕組みは FollowingExperimentManager 側の対応が別途必要（10 仕様 未実装）
+        WireExperimentControl(scene, leftCompositor);
+
+        // --- 8. 既存カメラの Culling Mask から全レイヤを除外する ---
         int excluded = ExcludeConeLayersFromExistingCameras(scene);
 
         EditorSceneManager.MarkSceneDirty(scene);
         Selection.activeGameObject = coneOther.gameObject;
 
-        EditorUtility.DisplayDialog("錐ガイドを追加しました",
+        EditorUtility.DisplayDialog("錐ガイド（両眼立体視）を追加しました",
             "シーン: " + scene.name + "\n\n" +
-            "レイヤ: " + ConeGuideLayers.ConeOtherName + " (" + otherLayer + ") / "
-            + ConeGuideLayers.ConeSelfName + " (" + selfLayer + ") / "
-            + ConeGuideLayers.ConeOtherFarName + " (" + otherFarLayer + ") / "
-            + ConeGuideLayers.ConeOtherRidgeName + " (" + otherRidgeLayer + ")\n" +
-            "Cone_Other → " + ghostAnchor.name + " に追従（" + LiveBoxCamName + " が箱全体を、"
-            + LiveBoxNearCamName + " / " + LiveBoxFarCamName + " / " + LiveBoxRidgeCamName
-            + " がガイド用に近断面/遠断面/稜線を個別に撮影）\n" +
-            "Cone_Self  → " + liveAnchor.name + " に追従（" + GhostBoxCamName + " が撮影）\n" +
-            "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n" +
-            compositorNote + "\n\n" +
-            "【使い方】ChannelCompositor のチェックを入れると3チャンネル合成経路に\n" +
-            "切り替わります（オフの間は従来どおり ViewSwitcher が表示を担当）。\n" +
-            "背景モード・箱モード・ガイドモード・極性・周波数は Inspector で切り替えられます。\n\n" +
-            "【遠断面の無限遠モード】各 Cone の Inspector で Far At Infinity をONにすると，\n" +
-            "遠断面が並進誤差では動かなくなります（Observer は自動配線済み）。\n\n" +
-            "【ガイド4ストローク】近断面・遠断面それぞれの「今」と、その数百ms前の状態\n" +
-            "（DelayedFrameBuffer で遅延複製）の間に4ストロークを掛けられます。\n" +
-            "4ストローク歩行シーンと同じ「今 vs 数百ms前」の仕組みを箱に適用したもので、\n" +
-            "Guide Mode を FourStroke にすると有効になります（箱チャンネルとは完全に独立）。\n" +
-            "Guide Near Enabled / Guide Far Enabled / Guide Ridge Enabled で近断面・遠断面・\n" +
-            "稜線のどれに掛けるかを独立に ON/OFF できます（既定: 近断面ON・遠断面OFF・稜線OFF）。\n" +
-            "稜線自体の表示/非表示は各 Cone の Draw Ridges で切り替えられます\n" +
-            "（これはガイド効果のON/OFFとは別で、稜線を消せば当然ガイド効果も出ません）。\n\n" +
-            "【近/遠の色分け】Cone_Other / Cone_Self の Dual Color Mode を有効化しました\n" +
-            "（近断面=シアン／遠断面=マゼンタ）。箱の4ストロークは輝度変調方式のため、\n" +
-            "箱チャンネルを4ストロークにすると自動的に無効化されます（警告ログが出ます）。\n\n" +
+            "Cone_Other → " + ghostAnchor.name + " に追従\n" +
+            "Cone_Self  → " + liveAnchor.name + " に追従\n\n" +
+            "左目: " + LeftEyeCaptureName + " 系統一式（" + LeftLiveBoxCamName + " 等）\n" +
+            "右目: " + RightEyeCaptureName + " 系統一式（" + RightLiveBoxCamName + " 等）\n" +
+            "収録視点: " + LeftGhostCameraName + " / " + RightGhostCameraName
+            + "（GhostEyeOffset がライブ側の実IPDに追従）\n\n" +
+            "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n\n" +
+            "【使い方】左目用 ChannelCompositor（" + LeftRawImageName + " 上）のチェックを入れると\n" +
+            "両眼の3チャンネル合成経路に切り替わります。右目用は左目用の設定を自動的に追随します\n" +
+            "（Mirror From で配線済み）。個別に変えたい場合のみ右目用を直接編集してください。\n\n" +
+            "【旧・単眼オブジェクトについて】LiveBoxCam 等の単眼時代のオブジェクトが\n" +
+            "シーンに残っている場合は、もう使われないため手動で削除してください。\n\n" +
+            "【未対応】再生確認シーン（ViewpointFollowingReplay.unity）はまだ両眼化していません。\n" +
+            "また、実験中の錐ガイド ON/OFF（K キー）を両目の ChannelCompositor に反映する対応は\n" +
+            "FollowingExperimentManager 側で別途必要です（現状は左目側のみ配線）。\n\n" +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -218,31 +382,39 @@ public static class ConeGuideSceneUpgrader
     /// <summary>
     /// M1 の見た目確認用: ライブ視点のカメラに錐レイヤを一時的に映す／戻す．
     /// 本来 錐は箱カメラからのみ見えるため，このトグルは<b>確認専用</b>である．
+    /// 見つかった左目・右目（またはレガシーの単眼）カメラすべてに対して切り替える．
     /// </summary>
     [MenuItem("Tools/視点追従実験/錐ガイド: プレビュー表示を切替")]
     public static void TogglePreview()
     {
         Scene scene = SceneManager.GetActiveScene();
-        Camera liveCam = FindLiveCaptureCamera(scene);
-        if (liveCam == null)
+        var previewCams = new List<Camera>();
+        foreach (string name in new[] { LeftEyeCaptureName, RightEyeCaptureName, "CenterEyeCapture", "LiveReplayCamera" })
         {
-            EditorUtility.DisplayDialog("エラー",
-                "ライブ映像のカメラ（CenterEyeCapture / LiveReplayCamera）が見つかりません。", "OK");
+            Camera cam = FindCamera(scene, name);
+            if (cam != null) previewCams.Add(cam);
+        }
+        if (previewCams.Count == 0)
+        {
+            EditorUtility.DisplayDialog("エラー", "ライブ映像のカメラが見つかりません。", "OK");
             return;
         }
 
         int mask = ConeGuideLayers.GuideMask;
-        bool showing = (liveCam.cullingMask & mask) != 0;
+        bool showing = (previewCams[0].cullingMask & mask) != 0;
 
-        Undo.RecordObject(liveCam, "Toggle Cone Guide Preview");
-        liveCam.cullingMask = showing
-            ? (liveCam.cullingMask & ~mask)   // 元に戻す（除外）
-            : (liveCam.cullingMask | mask);   // プレビュー表示（両方の錐を映す）
-        EditorUtility.SetDirty(liveCam);
+        foreach (Camera cam in previewCams)
+        {
+            Undo.RecordObject(cam, "Toggle Cone Guide Preview");
+            cam.cullingMask = showing
+                ? (cam.cullingMask & ~mask)   // 元に戻す（除外）
+                : (cam.cullingMask | mask);   // プレビュー表示（両方の錐を映す）
+            EditorUtility.SetDirty(cam);
+        }
         EditorSceneManager.MarkSceneDirty(scene);
 
         Debug.Log("[ConeGuideSceneUpgrader] 錐ガイドのプレビュー表示: "
-            + (showing ? "OFF（本来の設定に戻しました）" : "ON（" + liveCam.name + " に両方の錐を映しています）")
+            + (showing ? "OFF（本来の設定に戻しました）" : "ON（" + previewCams.Count + "台のカメラに錐を映しています）")
             + "\n※本番実験では必ず OFF に戻すこと。");
     }
 
@@ -334,7 +506,6 @@ public static class ConeGuideSceneUpgrader
         ConePoseFilter filter = go.GetComponent<ConePoseFilter>();
         if (filter == null)
         {
-            // 既定値は ConePoseFilter のフィールド初期値（ヨー=Raw / ピッチ=LPF 0.5Hz / ロール=Zero）
             filter = Undo.AddComponent<ConePoseFilter>(go);
         }
 
@@ -368,16 +539,40 @@ public static class ConeGuideSceneUpgrader
     }
 
     /// <summary>
-    /// 錐の Observer（この錐を実際に描画するカメラの Transform）を配線する．
+    /// 錐の左目用・右目用 Observer（この錐を実際に描画するカメラの Transform）を配線する．
     /// Far At Infinity（未使用時は無視される）のために必要．冪等（同じなら何もしない）．
     /// </summary>
-    private static void WireObserver(ConeGuide cone, Transform observer)
+    private static void WireObservers(ConeGuide cone, Transform observerLeft, Transform observerRight)
     {
-        if (cone.observer == observer) return;
-        Undo.RecordObject(cone, "Wire " + cone.name + " observer");
-        cone.observer = observer;
+        if (cone.observerLeft == observerLeft && cone.observerRight == observerRight) return;
+        Undo.RecordObject(cone, "Wire " + cone.name + " observers");
+        cone.observerLeft = observerLeft;
+        cone.observerRight = observerRight;
         EditorUtility.SetDirty(cone);
-        Debug.Log("[ConeGuideSceneUpgrader] " + cone.name + " の Observer を配線しました: " + observer.name);
+        Debug.Log("[ConeGuideSceneUpgrader] " + cone.name + " の Observer を配線しました: "
+            + "L=" + observerLeft.name + " R=" + observerRight.name);
+    }
+
+    /// <summary>
+    /// 収録視点側の左目用・右目用カメラに，ライブ側の実測IPDを反映する <see cref="GhostEyeOffset"/>
+    /// を用意する（10 §2.6 拡張）．
+    /// </summary>
+    private static void EnsureGhostEyeOffset(GameObject host, Transform liveLeftEye, Transform liveRightEye,
+        Transform ghostLeftEye, Transform ghostRightEye)
+    {
+        GhostEyeOffset offset = host.GetComponent<GhostEyeOffset>();
+        bool created = offset == null;
+        if (created) offset = Undo.AddComponent<GhostEyeOffset>(host);
+
+        Undo.RecordObject(offset, "Configure GhostEyeOffset");
+        offset.liveLeftEye = liveLeftEye;
+        offset.liveRightEye = liveRightEye;
+        offset.ghostLeftEye = ghostLeftEye;
+        offset.ghostRightEye = ghostRightEye;
+        EditorUtility.SetDirty(offset);
+        Debug.Log("[ConeGuideSceneUpgrader] " + host.name
+            + (created ? " に GhostEyeOffset を追加しました" : " の GhostEyeOffset を更新しました")
+            + "（ライブ側の実IPDを収録視点側にも反映）");
     }
 
     /// <summary>
@@ -390,9 +585,9 @@ public static class ConeGuideSceneUpgrader
         RenderTexture rt = AssetDatabase.LoadAssetAtPath<RenderTexture>(assetPath);
         if (rt == null)
         {
-            if (!AssetDatabase.CopyAsset(LiveRTPath, assetPath))
+            if (!AssetDatabase.CopyAsset(LiveRTTemplatePath, assetPath))
             {
-                Debug.LogError("[ConeGuideSceneUpgrader] RenderTexture の複製に失敗しました: " + LiveRTPath);
+                Debug.LogError("[ConeGuideSceneUpgrader] RenderTexture の複製に失敗しました: " + LiveRTTemplatePath);
                 return null;
             }
             rt = AssetDatabase.LoadAssetAtPath<RenderTexture>(assetPath);
@@ -426,12 +621,36 @@ public static class ConeGuideSceneUpgrader
     }
 
     /// <summary>
-    /// 箱カメラを用意する．背景カメラの<b>子</b>として localPosition=0 / localRotation=identity で
-    /// 置くことで，姿勢が常に背景カメラと完全一致する（仕様 §2.1）．
-    /// 指定した Culling Mask のレイヤだけを描き，背景を透明でクリアする．
+    /// 箱・ガイド用カメラを用意する．<paramref name="source"/> の<b>子</b>として
+    /// localPosition=0 で置くことで，その目の実際の視点と姿勢が完全に一致する（透明クリア）．
     /// </summary>
     private static Camera EnsureBoxCamera(Scene scene, string cameraName, Camera source,
         int cullingMask, RenderTexture target)
+    {
+        return EnsureChildCamera(scene, cameraName, source.transform, source, cullingMask, target,
+            CameraClearFlags.SolidColor, new Color(0f, 0f, 0f, 0f), lockLocalPosition: true);
+    }
+
+    /// <summary>
+    /// 収録視点側の左目用・右目用の環境カメラ（GhostCamera の子）を用意する．
+    /// 箱カメラと異なり，ローカル位置は <see cref="GhostEyeOffset"/> が毎フレーム設定するため
+    /// ここでは固定しない．クリア方式は <paramref name="source"/>（GhostCamera）と同じにする
+    /// （透明クリアではなく，通常の環境描画）．
+    /// </summary>
+    private static Camera EnsureEnvironmentCamera(Scene scene, string cameraName, Transform parent, Camera source,
+        int cullingMask, RenderTexture target)
+    {
+        return EnsureChildCamera(scene, cameraName, parent, source, cullingMask, target,
+            source.clearFlags, source.backgroundColor, lockLocalPosition: false);
+    }
+
+    /// <summary>
+    /// 子カメラを用意する共通処理．<paramref name="source"/> から FOV・near/far・投影を
+    /// コピーし，<paramref name="parent"/> の子として配置する．
+    /// </summary>
+    private static Camera EnsureChildCamera(Scene scene, string cameraName, Transform parent, Camera source,
+        int cullingMask, RenderTexture target, CameraClearFlags clearFlags, Color backgroundColor,
+        bool lockLocalPosition)
     {
         Transform existing = FindFirst(scene, new[] { cameraName });
         GameObject go;
@@ -451,21 +670,21 @@ public static class ConeGuideSceneUpgrader
         if (cam == null) cam = Undo.AddComponent<Camera>(go);
 
         Undo.RecordObject(cam, "Configure " + cameraName);
-        cam.CopyFrom(source);                              // FOV・near/far・投影を背景カメラに合わせる
+        cam.CopyFrom(source);                              // FOV・near/far・投影を元カメラに合わせる
         cam.cullingMask = cullingMask;                      // 指定レイヤだけを描く
-        cam.clearFlags = CameraClearFlags.SolidColor;
-        cam.backgroundColor = new Color(0f, 0f, 0f, 0f);   // 透明クリア（アルファ0＝箱がない場所）
+        cam.clearFlags = clearFlags;
+        cam.backgroundColor = backgroundColor;
         cam.targetTexture = target;
         cam.stereoTargetEye = StereoTargetEyeMask.None;    // HMD へ直接出力しない
-        cam.depth = source.depth + 1;                      // 背景カメラの後に描く
-        cam.useOcclusionCulling = false;                   // 錐しか描かないので不要
+        cam.depth = source.depth + 1;                      // 元カメラの後に描く
+        cam.useOcclusionCulling = false;
         cam.allowHDR = false;
         cam.allowMSAA = false;
 
-        // 背景カメラの子にして姿勢を完全一致させる．
-        // CopyFrom が投影行列を書き換える可能性があるため，Transform の確定は必ずこの後に行う
-        Undo.SetTransformParent(go.transform, source.transform, "Parent " + cameraName);
-        go.transform.localPosition = Vector3.zero;
+        // 親の子にして姿勢を追従させる．CopyFrom が投影行列を書き換える可能性があるため，
+        // Transform の確定は必ずこの後に行う
+        Undo.SetTransformParent(go.transform, parent, "Parent " + cameraName);
+        if (lockLocalPosition) go.transform.localPosition = Vector3.zero;
         go.transform.localRotation = Quaternion.identity;
         go.transform.localScale = Vector3.one;
         cam.ResetWorldToCameraMatrix();  // CopyFrom が持ち込みうる固定行列を捨て，親追従に戻す
@@ -474,124 +693,73 @@ public static class ConeGuideSceneUpgrader
 
         EditorUtility.SetDirty(cam);
         Debug.Log("[ConeGuideSceneUpgrader] " + cameraName + (existing != null ? " を更新" : " を作成")
-            + "しました（親: " + source.name + ", Culling Mask: " + cullingMask + ", 出力: " + target.name + "）");
+            + "しました（親: " + parent.name + ", Culling Mask: " + cullingMask + ", 出力: " + target.name + "）");
         return cam;
     }
 
     /// <summary>
-    /// ChannelCompositor を ViewSwitcher と同じオブジェクトに用意し，4入力を配線する．
-    /// 表示先・背景テクスチャは既存 ViewSwitcher の配線をそのまま流用するため，
-    /// シーン構成に依存した名前探索をしなくて済む．
+    /// 片目分の ChannelCompositor を用意して配線する．
     /// </summary>
-    /// <returns>ダイアログに出す1行の結果メッセージ</returns>
-    private static string EnsureCompositor(Scene scene, ConeGuide coneOther, ConeGuide coneSelf,
-        RenderTexture boxOtherRT, RenderTexture boxSelfRT,
-        RenderTexture boxOtherNearRT, RenderTexture boxOtherFarRT, RenderTexture boxOtherRidgeRT,
-        Camera liveBoxCam, Camera ghostBoxCam, Camera liveBoxNearCam, Camera liveBoxFarCam, Camera liveBoxRidgeCam)
+    /// <param name="eyeLabel">ログ・デバッグ用のラベル（"左目"／"右目"）</param>
+    /// <param name="ch">この目のチャンネル入力一式</param>
+    /// <param name="mirrorFrom">
+    /// 提示条件の同期元（10 §2.7）．左目側（マスター）には null を渡す．
+    /// </param>
+    private static ChannelCompositor EnsureCompositorForEye(string eyeLabel, EyeChannels ch,
+        ConeGuide coneOther, ConeGuide coneSelf, ViewSwitcher viewSwitcher, ChannelCompositor mirrorFrom)
     {
-        List<ViewSwitcher> switchers = CollectComponents<ViewSwitcher>(scene);
-        if (switchers.Count == 0)
-        {
-            Debug.LogWarning("[ConeGuideSceneUpgrader] ViewSwitcher が見つからないため ChannelCompositor は追加しませんでした");
-            return "ChannelCompositor: ViewSwitcher が無いため未追加";
-        }
-        ViewSwitcher switcher = switchers[0];
-        GameObject host = switcher.gameObject;
-
-        ChannelCompositor compositor = host.GetComponent<ChannelCompositor>();
+        ChannelCompositor compositor = ch.host.GetComponent<ChannelCompositor>();
         bool created = compositor == null;
         if (created)
         {
-            compositor = Undo.AddComponent<ChannelCompositor>(host);
+            compositor = Undo.AddComponent<ChannelCompositor>(ch.host);
             // 既定は無効。オンにしたときだけ新しい合成経路に切り替わる
-            // （オフの間は ViewSwitcher の従来動作がそのまま残る）
             compositor.enabled = false;
         }
 
-        Undo.RecordObject(compositor, "Configure ChannelCompositor");
-        compositor.viewSwitcher = switcher;
-        compositor.rawImage = switcher.rawImage;
-        compositor.bgLiveTexture = switcher.liveTexture;
-        compositor.bgGhostTexture = switcher.playbackTexture;
-        compositor.boxOtherTexture = boxOtherRT;
-        compositor.boxSelfTexture = boxSelfRT;
-        compositor.guideNearNowTexture = boxOtherNearRT;
-        compositor.guideFarNowTexture = boxOtherFarRT;
-        compositor.guideRidgeNowTexture = boxOtherRidgeRT;
+        Undo.RecordObject(compositor, "Configure ChannelCompositor (" + eyeLabel + ")");
+        compositor.viewSwitcher = viewSwitcher;
+        compositor.rawImage = ch.rawImage;
+        compositor.bgLiveTexture = ch.bgLive;
+        compositor.bgGhostTexture = ch.bgGhost;
+        compositor.boxOtherTexture = ch.boxOtherRT;
+        compositor.boxSelfTexture = ch.boxSelfRT;
+        compositor.guideNearNowTexture = ch.boxOtherNearRT;
+        compositor.guideFarNowTexture = ch.boxOtherFarRT;
+        compositor.guideRidgeNowTexture = ch.boxOtherRidgeRT;
         compositor.coneOther = coneOther;
         compositor.coneSelf = coneSelf;
-        compositor.liveBoxCamera = liveBoxCam;
-        compositor.ghostBoxCamera = ghostBoxCam;
-        compositor.guideNearCamera = liveBoxNearCam;
-        compositor.guideFarCamera = liveBoxFarCam;
-        compositor.guideRidgeCamera = liveBoxRidgeCam;
+        compositor.liveBoxCamera = ch.liveBoxCam;
+        compositor.ghostBoxCamera = ch.ghostBoxCam;
+        compositor.guideNearCamera = ch.liveBoxNearCam;
+        compositor.guideFarCamera = ch.liveBoxFarCam;
+        compositor.guideRidgeCamera = ch.liveBoxRidgeCam;
+        compositor.mirrorFrom = mirrorFrom;
         if (compositor.shader == null)
         {
             compositor.shader = AssetDatabase.LoadAssetAtPath<Shader>(ChannelCompositeShaderPath);
         }
 
         // ガイドチャンネル: 近断面・遠断面・稜線それぞれの専用テクスチャを一定レートで
-        // リングバッファへ複製し，数百ms前の状態を取り出せるようにする（4ストローク歩行シーンの
-        // DelayedFrameBuffer をそのまま流用。既定 8フレーム@30fps ≈267ms。09 §3.7 拡張）
-        var claimedBuffers = new HashSet<DelayedFrameBuffer>();
-        compositor.guideNearDelayBuffer = EnsureDelayBuffer(host, boxOtherNearRT, "近断面", claimedBuffers);
-        compositor.guideFarDelayBuffer = EnsureDelayBuffer(host, boxOtherFarRT, "遠断面", claimedBuffers);
-        compositor.guideRidgeDelayBuffer = EnsureDelayBuffer(host, boxOtherRidgeRT, "稜線", claimedBuffers);
+        // リングバッファへ複製し，数百ms前の状態を取り出せるようにする（09 §3.7 拡張）
+        var claimed = new HashSet<DelayedFrameBuffer>();
+        compositor.guideNearDelayBuffer = EnsureDelayBuffer(ch.host, ch.boxOtherNearRT, eyeLabel + "近断面", claimed);
+        compositor.guideFarDelayBuffer = EnsureDelayBuffer(ch.host, ch.boxOtherFarRT, eyeLabel + "遠断面", claimed);
+        compositor.guideRidgeDelayBuffer = EnsureDelayBuffer(ch.host, ch.boxOtherRidgeRT, eyeLabel + "稜線", claimed);
 
         EditorUtility.SetDirty(compositor);
-
-        // 再生確認シーンでは ReplayPlayer が表示モードと連動して合成器を制御する
-        // （錐ガイドは Reswitch＝収録後の再合成が土俵なので、そこでのみ有効になる）
-        foreach (ReplayPlayer replay in CollectComponents<ReplayPlayer>(scene))
-        {
-            Undo.RecordObject(replay, "Wire ChannelCompositor");
-            replay.channelCompositor = compositor;
-            EditorUtility.SetDirty(replay);
-            Debug.Log("[ConeGuideSceneUpgrader] ReplayPlayer に ChannelCompositor を配線しました"
-                + "（ReplayPlayer > Cone Guide Enabled をオンにし、表示モードを Reswitch にすると有効）");
-        }
-
-        // 実験シーンでは FollowingExperimentManager が K キーで合成器を制御する
-        foreach (FollowingExperimentManager mgr in CollectComponents<FollowingExperimentManager>(scene))
-        {
-            Undo.RecordObject(mgr, "Wire ChannelCompositor");
-            mgr.channelCompositor = compositor;
-            EditorUtility.SetDirty(mgr);
-            Debug.Log("[ConeGuideSceneUpgrader] FollowingExperimentManager に ChannelCompositor を"
-                + "配線しました（停止中に K キーで錐ガイドの ON/OFF）");
-        }
-
-        // ロガーは表示ソースと箱条件を合成器から、初期オフセット量を管理クラスから取る
-        foreach (FollowingLogger logger in CollectComponents<FollowingLogger>(scene))
-        {
-            Undo.RecordObject(logger, "Wire ChannelCompositor");
-            logger.compositor = compositor;
-            if (logger.manager == null)
-            {
-                List<FollowingExperimentManager> mgrs = CollectComponents<FollowingExperimentManager>(scene);
-                if (mgrs.Count > 0) logger.manager = mgrs[0];
-            }
-            EditorUtility.SetDirty(logger);
-            Debug.Log("[ConeGuideSceneUpgrader] FollowingLogger に ChannelCompositor と"
-                + " FollowingExperimentManager を配線しました");
-        }
-
-        Debug.Log("[ConeGuideSceneUpgrader] ChannelCompositor を " + host.name
+        Debug.Log("[ConeGuideSceneUpgrader] ChannelCompositor（" + eyeLabel + "）を " + ch.host.name
             + (created ? " に追加しました（既定は無効）" : " で更新しました"));
-        return "ChannelCompositor: " + host.name + (created ? " に追加（既定は無効）" : " を更新");
+        return compositor;
     }
 
     /// <summary>
     /// ガイドチャンネル用の遅延バッファを用意する．指定したソーステクスチャ（近断面/遠断面/稜線の
     /// 専用RT）を一定レートでリングバッファへ複製し，数百ms前の状態を取り出せるようにする．
-    /// 4ストローク歩行シーンで自分の過去映像を扱う DelayedFrameBuffer をそのまま流用する
-    /// （既定 8フレーム@30fps ≈267ms。値自体はユーザーが Inspector で調整済みなら壊さない）．
     ///
     /// host には近断面用・遠断面用・稜線用の3つの DelayedFrameBuffer が同居するため，
     /// <paramref name="claimed"/> でこの呼び出し内ですでに割り当て済みのコンポーネントを除外しつつ，
     /// sourceTexture が一致する既存コンポーネントを優先的に再利用する（冪等）．
-    /// 一致するものが無ければ，まだ割り当てていない既存コンポーネント（旧バージョンからの
-    /// 移行）を1つ流用し，それも無ければ新規追加する．
     /// </summary>
     private static DelayedFrameBuffer EnsureDelayBuffer(GameObject host, RenderTexture sourceRT,
         string label, HashSet<DelayedFrameBuffer> claimed)
@@ -627,8 +795,50 @@ public static class ConeGuideSceneUpgrader
     }
 
     /// <summary>
-    /// シーン内の既存カメラすべてから錐の全レイヤ（近断面/遠断面/稜線/Self）を除外する．
-    /// 箱カメラ（M2 で追加）は錐を映すのが役目なので対象外にする．
+    /// 実験制御・ロガーへ ChannelCompositor（マスター側＝左目用）を配線する．
+    /// </summary>
+    /// <remarks>
+    /// 有効/無効の切替（K キー等）を<b>右目側にも反映する対応は未実装</b>。
+    /// 現状は左目側だけが切り替わり，右目側の enabled は追随しない
+    /// （<see cref="ChannelCompositor.mirrorFrom"/> はパラメータの同期のみで，
+    /// 無効化されたコンポーネントは LateUpdate 自体が呼ばれないため enabled 自体は
+    /// 同期できない）。FollowingExperimentManager 側の対応を別途行うこと（10 仕様，未着手）。
+    /// </remarks>
+    private static void WireExperimentControl(Scene scene, ChannelCompositor masterCompositor)
+    {
+        foreach (ReplayPlayer replay in CollectComponents<ReplayPlayer>(scene))
+        {
+            Undo.RecordObject(replay, "Wire ChannelCompositor");
+            replay.channelCompositor = masterCompositor;
+            EditorUtility.SetDirty(replay);
+        }
+
+        foreach (FollowingExperimentManager mgr in CollectComponents<FollowingExperimentManager>(scene))
+        {
+            Undo.RecordObject(mgr, "Wire ChannelCompositor");
+            mgr.channelCompositor = masterCompositor;
+            EditorUtility.SetDirty(mgr);
+        }
+
+        foreach (FollowingLogger logger in CollectComponents<FollowingLogger>(scene))
+        {
+            Undo.RecordObject(logger, "Wire ChannelCompositor");
+            logger.compositor = masterCompositor;
+            if (logger.manager == null)
+            {
+                List<FollowingExperimentManager> mgrs = CollectComponents<FollowingExperimentManager>(scene);
+                if (mgrs.Count > 0) logger.manager = mgrs[0];
+            }
+            EditorUtility.SetDirty(logger);
+        }
+
+        Debug.Log("[ConeGuideSceneUpgrader] 実験制御・ロガーに左目用 ChannelCompositor を配線しました"
+            + "（右目用への有効/無効の反映は未対応）");
+    }
+
+    /// <summary>
+    /// シーン内の既存カメラすべてから錐の全レイヤを除外する．
+    /// 箱・ガイド用カメラ（<see cref="BoxCameraNames"/>）は錐を映すのが役目なので対象外にする．
     /// </summary>
     /// <returns>変更したカメラの台数</returns>
     private static int ExcludeConeLayersFromExistingCameras(Scene scene)
@@ -638,7 +848,7 @@ public static class ConeGuideSceneUpgrader
 
         foreach (Camera cam in CollectComponents<Camera>(scene))
         {
-            if (System.Array.IndexOf(BoxCameraNames, cam.name) >= 0) continue; // 箱カメラは除外しない
+            if (System.Array.IndexOf(BoxCameraNames, cam.name) >= 0) continue; // 箱・ガイド用カメラは除外しない
             if ((cam.cullingMask & mask) == 0) continue;                        // 既に除外済み
 
             Undo.RecordObject(cam, "Exclude cone layers");
@@ -648,23 +858,6 @@ public static class ConeGuideSceneUpgrader
             Debug.Log("[ConeGuideSceneUpgrader] " + cam.name + " の Culling Mask から錐レイヤを除外しました");
         }
         return count;
-    }
-
-    /// <summary>
-    /// ライブ映像を撮っているカメラを探す（プレビュー表示の対象）
-    /// </summary>
-    private static Camera FindLiveCaptureCamera(Scene scene)
-    {
-        foreach (string name in new[] { "CenterEyeCapture", "LiveReplayCamera" })
-        {
-            Transform t = FindFirst(scene, new[] { name });
-            if (t != null)
-            {
-                Camera cam = t.GetComponent<Camera>();
-                if (cam != null) return cam;
-            }
-        }
-        return null;
     }
 
     // ==================== 探索ヘルパー ====================
@@ -696,6 +889,20 @@ public static class ConeGuideSceneUpgrader
             if (found != null) return found;
         }
         return null;
+    }
+
+    /// <summary>指定名の Transform を探し，その Camera コンポーネントを返す（無ければ null）</summary>
+    private static Camera FindCamera(Scene scene, string name)
+    {
+        Transform t = FindFirst(scene, new[] { name });
+        return t != null ? t.GetComponent<Camera>() : null;
+    }
+
+    /// <summary>指定名の Transform を探し，その RawImage コンポーネントを返す（無ければ null）</summary>
+    private static RawImage FindRawImage(Scene scene, string name)
+    {
+        Transform t = FindFirst(scene, new[] { name });
+        return t != null ? t.GetComponent<RawImage>() : null;
     }
 
     /// <summary>シーン内（非アクティブを含む）の全 T を集める</summary>

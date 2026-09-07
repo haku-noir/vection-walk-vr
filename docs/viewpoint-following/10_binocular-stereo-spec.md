@@ -175,5 +175,34 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 | 1 | `ConeGuideLayers.cs`: Far At Infinity用の左目/右目別レイヤ（ConeOtherFarLeft/Right）を追加 | 完了 |
 | 2 | `ConeGuide.cs`: 遠断面のFar At Infinityを左目/右目別メッシュに分岐（ConeSelfFarLeft/Right含む） | 完了 |
 | 3 | `ChannelCompositor.cs`: `mirrorFrom`パターンで提示条件を左右共有 | 完了 |
-| 4 | `ConeGuideSceneUpgrader.cs`: 左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線 | 未着手 |
+| 4 | `ConeGuideSceneUpgrader.cs`: 左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線 | 完了（ViewpointFollowing.unityのみ対応） |
 | 5 | `ViewpointFollowingSceneBuilder.cs`: `usePerEyeCameras`解除・Canvas有効化 | 未着手 |
+
+### 6.1 段階4（ConeGuideSceneUpgrader.cs）実装時に判明した追加事項
+
+当初の§3の想定より実装範囲が広がった。判明した順に記録する:
+
+1. **GhostCamera は実機IPDを持たない**。`Cone_Self`・背景の収録視点側（GhostCamera）は
+   `OVRCameraRig` の一部ではなく，`LeftEyeAnchor`/`RightEyeAnchor`のような実機IPD追従が無い。
+   新規スクリプト`GhostEyeOffset.cs`を追加し，ライブ側の実測IPD（`LeftEyeAnchor`/`RightEyeAnchor`
+   間の距離）を毎フレーム収録視点側の左目用・右目用カメラ（`LeftGhostCamera`/`RightGhostCamera`，
+   これも新規）に反映するようにした。HMD未接続時は成人平均IPD（63mm）にフォールバックする
+2. **背景（収録視点）も左右別カメラでの環境再レンダリングが必要**。従来`GhostCamera`が
+   直接`PlaybackEye.renderTexture`へ描画していたが，`LeftGhostCamera`/`RightGhostCamera`が
+   新たに`LeftPlaybackEye.renderTexture`/`RightPlaybackEye.renderTexture`へ環境を再レンダリング
+   する（`GhostCamera`自身は変更せず残置。他機能が参照している可能性への配慮）
+3. **箱チャンネル・ガイドチャンネルの遠断面入力の Culling Mask は，Far At Infinity の
+   有効/無効どちらでも動くよう「無効時の共通レイヤ」と「有効時のその目専用レイヤ」の
+   両方を含める**必要がある（同時に中身を持つのは常にどちらか一方だけなので安全）
+4. **再生確認シーン（ViewpointFollowingReplay.unity）は今回のスコープ外**。`OVRCameraRig`
+   を持たないため，`LeftEyeCapture`等の休眠インフラが存在しない。§2.8の決定自体は
+   変更しないが，具体的な実装は別途行う必要があると判明した（現状はこのシーンで
+   メニューを実行するとエラーダイアログを出して中断する）
+5. **錐ガイドのON/OFF（Kキー等，実験制御）を両目のChannelCompositorへ反映する対応が
+   未実装**。`ChannelCompositor.mirrorFrom`は提示条件（パラメータ）の同期のみを行い，
+   `enabled`（コンポーネント自体の有効/無効）は同期できない（無効化されたコンポーネントは
+   `LateUpdate`が呼ばれず，同期元を「引く」動作自体が起きないため）。現状は
+   `FollowingExperimentManager`/`ReplayPlayer`/`FollowingLogger`とも左目用（マスター）の
+   ChannelCompositorにのみ配線されており，右目側の有効/無効は追随しない。
+   `FollowingExperimentManager.cs`等の側で右目用の参照も持たせ，切替時に両方へ反映する
+   対応が別途必要（次のコミットで対応予定）
