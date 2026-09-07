@@ -31,9 +31,17 @@ using UnityEngine.UI;
 /// 実機IPDを持たないため，新設した <see cref="GhostEyeOffset"/> がライブ側の実測IPDを
 /// 毎フレーム収録視点側の左目用・右目用カメラへ反映する．
 ///
-/// <b>現時点では ViewpointFollowing.unity（HMD実験シーン）のみ対応</b>．再生確認シーン
-/// （ViewpointFollowingReplay.unity）は OVRCameraRig を持たないため，両眼化は別途対応が必要
-/// （10 仕様 §2.8 は決定事項だが，具体的な実装は未着手）．
+/// <b>ViewpointFollowing.unity（HMD実験シーン）と ViewpointFollowingReplay.unity
+/// （再生確認シーン）の両方に対応する</b>（10 §2.8 拡張）．実験シーンは
+/// <c>LeftEyeCapture</c>/<c>RightEyeCapture</c>（実機トラッキング，Player.prefab に
+/// 元々存在）をそのままライブ側の映像取得元として使う．再生確認シーンは
+/// <c>OVRCameraRig</c> を持たないため，<see cref="EnsurePlayerRig"/> が非破壊的に
+/// Player.prefab を追加した上で，単一の <c>LiveReplayCamera</c>（CSV再生でスクリプト
+/// 駆動される，実機トラッキングされない）から <c>LeftLiveReplayCam</c>/<c>RightLiveReplayCam</c>
+/// を新設し，<see cref="GhostEyeOffset"/> で左右分離する——収録視点（GhostCamera/
+/// GhostReplayCamera）の扱いと全く同じパターンである．OVRCameraRig 由来のオブジェクトは
+/// 再生確認シーンでは<b>HMDへの最終出力経路としてのみ</b>使い，レビュアーの実際の頭部
+/// トラッキングは映像の中身には一切影響しない（VRで録画済み映像を見るのに近い体験）．
 ///
 /// シーンは自動保存しない（既存シーンを勝手に上書きしないため）．
 /// 内容を確認してから手動で保存すること．
@@ -68,6 +76,15 @@ public static class ConeGuideSceneUpgrader
     private const string LeftPlaybackEyeRTPath = "Assets/Textures/LeftPlaybackEye.renderTexture";
     private const string RightPlaybackEyeRTPath = "Assets/Textures/RightPlaybackEye.renderTexture";
 
+    // 再生確認シーン用: ライブ側（LiveReplayCamera）の背景用 RenderTexture（10 §2.8 拡張）。
+    // 実験シーンでは既存 LeftEye/RightEye（LeftEyeCapture/RightEyeCaptureの出力）を再利用するため，
+    // これは LeftEyeCapture/RightEyeCapture が見つからない場合のみ使う
+    private const string LeftLiveReplayRTPath = "Assets/Textures/LeftLiveReplay.renderTexture";
+    private const string RightLiveReplayRTPath = "Assets/Textures/RightLiveReplay.renderTexture";
+
+    // Player.prefab のアセットパス（再生確認シーンに非破壊的に追加する用，10 §2.8 拡張）
+    private const string PlayerPrefabPath = "Assets/Prefabs/Player.prefab";
+
     // Player.prefab（OVRCameraRig）内に既に存在する両眼インフラの名前（10 §2.6）
     private const string LeftEyeCaptureName = "LeftEyeCapture";
     private const string RightEyeCaptureName = "RightEyeCapture";
@@ -79,6 +96,10 @@ public static class ConeGuideSceneUpgrader
     // 新設する収録視点側の左目用・右目用カメラ（GhostCamera の子）
     private const string LeftGhostCameraName = "LeftGhostCamera";
     private const string RightGhostCameraName = "RightGhostCamera";
+
+    // 再生確認シーン用: 新設するライブ側の左目用・右目用カメラ（LiveReplayCamera の子，10 §2.8 拡張）
+    private const string LeftLiveReplayCamName = "LeftLiveReplayCam";
+    private const string RightLiveReplayCamName = "RightLiveReplayCam";
 
     // 箱・ガイド用カメラの名前（Left/Right 前置，10 §2.9 命名規則）
     private const string LeftLiveBoxCamName = "LeftLiveBoxCam";
@@ -176,40 +197,41 @@ public static class ConeGuideSceneUpgrader
             return;
         }
 
-        // --- 2.5. 両眼立体視インフラ（Player.prefab 内，10 §2.6）を探す ---
-        Camera leftEyeCaptureCam = FindCamera(scene, LeftEyeCaptureName);
-        Camera rightEyeCaptureCam = FindCamera(scene, RightEyeCaptureName);
+        // --- 2.5. HMDへの出力経路（OVRCameraRig）が無ければ非破壊的に追加する ---
+        // 実験シーンには元々 Player.prefab（Left/RightEyeCapture 等を含む）がある。
+        // 再生確認シーンには無いため，ここで追加する（10 §2.8 拡張）。liveAnchor/ghostAnchor は
+        // 追加より前にすでに解決済みなので，Player.prefab に含まれる CenterEyeAnchor が
+        // 誤って「ライブ視点」として拾われることはない
+        EnsurePlayerRig(scene);
+
+        // --- 2.6. 両眼立体視インフラ（Player.prefab 内，10 §2.6）を探す ---
         Transform leftEyeAnchor = FindFirst(scene, new[] { LeftEyeAnchorName });
         Transform rightEyeAnchor = FindFirst(scene, new[] { RightEyeAnchorName });
         RawImage leftRawImage = FindRawImage(scene, LeftRawImageName);
         RawImage rightRawImage = FindRawImage(scene, RightRawImageName);
 
-        if (leftEyeCaptureCam == null || rightEyeCaptureCam == null || leftEyeAnchor == null
-            || rightEyeAnchor == null || leftRawImage == null || rightRawImage == null)
+        if (leftEyeAnchor == null || rightEyeAnchor == null || leftRawImage == null || rightRawImage == null)
         {
             EditorUtility.DisplayDialog("エラー",
                 "両眼立体視に必要なオブジェクトが見つかりません。\n\n" +
                 "見つからなかったもの:\n" +
-                (leftEyeCaptureCam == null ? "- LeftEyeCapture\n" : "") +
-                (rightEyeCaptureCam == null ? "- RightEyeCapture\n" : "") +
                 (leftEyeAnchor == null ? "- LeftEyeAnchor\n" : "") +
                 (rightEyeAnchor == null ? "- RightEyeAnchor\n" : "") +
                 (leftRawImage == null ? "- LeftRawImage\n" : "") +
                 (rightRawImage == null ? "- RightRawImage\n" : "") +
                 "\nこれらは Player.prefab（OVRCameraRig を含む）に含まれています。\n" +
-                "再生確認シーン（ViewpointFollowingReplay.unity）は OVRCameraRig を持たないため，\n" +
-                "現時点では両眼化に対応していません。ViewpointFollowing.unity を開いて実行してください。",
+                "Assets/Prefabs/Player.prefab が見つからないか壊れている可能性があります。",
                 "OK");
             return;
         }
 
-        // --- 2.6. OVRCameraRig を両眼立体視モードに切り替え，表示先Canvasを有効化する ---
+        // --- 2.7. OVRCameraRig を両眼立体視モードに切り替え，表示先Canvasを有効化する ---
         // このシーンが以前（本仕様着手前）に構築されたものの場合，usePerEyeCameras は
         // まだ OFF・LeftCanvas/RightCanvas もまだ無効のままになっている。
         // ViewpointFollowingSceneBuilder.cs はゼロから構築する専用ツールで既存シーンには
         // 使わないため，このアップグレーダ側で明示的に切り替える必要がある
         // （さもないと錐やChannelCompositorを配線してもGame画面に何も表示されない）
-        OVRCameraRig rig = leftEyeCaptureCam.GetComponentInParent<OVRCameraRig>();
+        OVRCameraRig rig = leftEyeAnchor.GetComponentInParent<OVRCameraRig>();
         if (rig != null && !rig.usePerEyeCameras)
         {
             Undo.RecordObject(rig, "Enable per-eye cameras");
@@ -222,6 +244,53 @@ public static class ConeGuideSceneUpgrader
         // 単眼時代の CenterCanvas は今後使わないため無効化する（LeftCanvas/RightCanvas との
         // 二重表示を避けるため。実機で確認済みではないので，問題が出る場合は要調整）
         SetActiveIfFound(scene, "CenterCanvas", false);
+
+        // --- 2.8. ライブ側の映像取得元を決定する（10 §2.8 拡張） ---
+        // 実験シーン: LeftEyeCapture/RightEyeCapture（実機トラッキング）がそのまま使える。
+        // 再生確認シーン: 存在しないため，単一の LiveReplayCamera（CSV再生でスクリプト駆動，
+        // 実機トラッキングされない）から左目用・右目用の子カメラを新設する
+        // （収録視点=GhostCamera/GhostReplayCameraの扱いと全く同じパターン）
+        Camera leftLiveCam = FindCamera(scene, LeftEyeCaptureName);
+        Camera rightLiveCam = FindCamera(scene, RightEyeCaptureName);
+        Texture leftLiveBgTexture;
+        Texture rightLiveBgTexture;
+
+        if (leftLiveCam != null && rightLiveCam != null)
+        {
+            // 実験シーン: 環境の見え方（Culling Mask）を収録視点側と揃える
+            // （LeftEyeCapture/RightEyeCapture は別実験用に作られた休眠オブジェクトのため）
+            leftLiveCam.cullingMask = ghostBgCam.cullingMask;
+            rightLiveCam.cullingMask = ghostBgCam.cullingMask;
+            EditorUtility.SetDirty(leftLiveCam);
+            EditorUtility.SetDirty(rightLiveCam);
+            leftLiveBgTexture = leftLiveCam.targetTexture;
+            rightLiveBgTexture = rightLiveCam.targetTexture;
+        }
+        else
+        {
+            Camera liveBgCam = liveAnchor.GetComponent<Camera>();
+            if (liveBgCam == null)
+            {
+                EditorUtility.DisplayDialog("エラー",
+                    "ライブ視点のカメラが見つかりません（" + liveAnchor.name + " に Camera が無い）。", "OK");
+                return;
+            }
+            RenderTexture leftLiveRT = EnsureBoxRenderTexture(LeftLiveReplayRTPath);
+            RenderTexture rightLiveRT = EnsureBoxRenderTexture(RightLiveReplayRTPath);
+            if (leftLiveRT == null || rightLiveRT == null)
+            {
+                EditorUtility.DisplayDialog("エラー", "ライブ視点用 RenderTexture を用意できませんでした。", "OK");
+                return;
+            }
+            leftLiveCam = EnsureEnvironmentCamera(scene, LeftLiveReplayCamName, liveAnchor, liveBgCam,
+                liveBgCam.cullingMask, leftLiveRT);
+            rightLiveCam = EnsureEnvironmentCamera(scene, RightLiveReplayCamName, liveAnchor, liveBgCam,
+                liveBgCam.cullingMask, rightLiveRT);
+            EnsureGhostEyeOffset(liveAnchor.gameObject, leftEyeAnchor, rightEyeAnchor,
+                leftLiveCam.transform, rightLiveCam.transform);
+            leftLiveBgTexture = leftLiveRT;
+            rightLiveBgTexture = rightLiveRT;
+        }
 
         Shader coneShader = AssetDatabase.LoadAssetAtPath<Shader>(ConeLineShaderPath);
 
@@ -261,13 +330,6 @@ public static class ConeGuideSceneUpgrader
         EnsureGhostEyeOffset(ghostAnchor.gameObject, leftEyeAnchor, rightEyeAnchor,
             leftGhostCam.transform, rightGhostCam.transform);
 
-        // ライブ側・収録側で環境の見え方（Culling Mask）を揃える
-        // （LeftEyeCapture/RightEyeCapture は別実験用に作られた休眠オブジェクトのため）
-        leftEyeCaptureCam.cullingMask = ghostBgCam.cullingMask;
-        rightEyeCaptureCam.cullingMask = ghostBgCam.cullingMask;
-        EditorUtility.SetDirty(leftEyeCaptureCam);
-        EditorUtility.SetDirty(rightEyeCaptureCam);
-
         // --- 5. 箱用・ガイド用 RenderTexture を左右分用意する ---
         RenderTexture leftBoxOtherRT = EnsureBoxRenderTexture(LeftBoxOtherRTPath);
         RenderTexture rightBoxOtherRT = EnsureBoxRenderTexture(RightBoxOtherRTPath);
@@ -300,17 +362,17 @@ public static class ConeGuideSceneUpgrader
         int otherFarGuideMaskLeft = (1 << otherFarLayer) | (1 << otherFarLeftLayer);
         int otherFarGuideMaskRight = (1 << otherFarLayer) | (1 << otherFarRightLayer);
 
-        Camera leftLiveBoxCam = EnsureBoxCamera(scene, LeftLiveBoxCamName, leftEyeCaptureCam, otherBoxMaskLeft, leftBoxOtherRT);
-        Camera rightLiveBoxCam = EnsureBoxCamera(scene, RightLiveBoxCamName, rightEyeCaptureCam, otherBoxMaskRight, rightBoxOtherRT);
+        Camera leftLiveBoxCam = EnsureBoxCamera(scene, LeftLiveBoxCamName, leftLiveCam, otherBoxMaskLeft, leftBoxOtherRT);
+        Camera rightLiveBoxCam = EnsureBoxCamera(scene, RightLiveBoxCamName, rightLiveCam, otherBoxMaskRight, rightBoxOtherRT);
         Camera leftGhostBoxCam = EnsureBoxCamera(scene, LeftGhostBoxCamName, leftGhostCam, selfBoxMaskLeft, leftBoxSelfRT);
         Camera rightGhostBoxCam = EnsureBoxCamera(scene, RightGhostBoxCamName, rightGhostCam, selfBoxMaskRight, rightBoxSelfRT);
 
-        Camera leftLiveBoxNearCam = EnsureBoxCamera(scene, LeftLiveBoxNearCamName, leftEyeCaptureCam, 1 << otherLayer, leftBoxOtherNearRT);
-        Camera rightLiveBoxNearCam = EnsureBoxCamera(scene, RightLiveBoxNearCamName, rightEyeCaptureCam, 1 << otherLayer, rightBoxOtherNearRT);
-        Camera leftLiveBoxFarCam = EnsureBoxCamera(scene, LeftLiveBoxFarCamName, leftEyeCaptureCam, otherFarGuideMaskLeft, leftBoxOtherFarRT);
-        Camera rightLiveBoxFarCam = EnsureBoxCamera(scene, RightLiveBoxFarCamName, rightEyeCaptureCam, otherFarGuideMaskRight, rightBoxOtherFarRT);
-        Camera leftLiveBoxRidgeCam = EnsureBoxCamera(scene, LeftLiveBoxRidgeCamName, leftEyeCaptureCam, 1 << otherRidgeLayer, leftBoxOtherRidgeRT);
-        Camera rightLiveBoxRidgeCam = EnsureBoxCamera(scene, RightLiveBoxRidgeCamName, rightEyeCaptureCam, 1 << otherRidgeLayer, rightBoxOtherRidgeRT);
+        Camera leftLiveBoxNearCam = EnsureBoxCamera(scene, LeftLiveBoxNearCamName, leftLiveCam, 1 << otherLayer, leftBoxOtherNearRT);
+        Camera rightLiveBoxNearCam = EnsureBoxCamera(scene, RightLiveBoxNearCamName, rightLiveCam, 1 << otherLayer, rightBoxOtherNearRT);
+        Camera leftLiveBoxFarCam = EnsureBoxCamera(scene, LeftLiveBoxFarCamName, leftLiveCam, otherFarGuideMaskLeft, leftBoxOtherFarRT);
+        Camera rightLiveBoxFarCam = EnsureBoxCamera(scene, RightLiveBoxFarCamName, rightLiveCam, otherFarGuideMaskRight, rightBoxOtherFarRT);
+        Camera leftLiveBoxRidgeCam = EnsureBoxCamera(scene, LeftLiveBoxRidgeCamName, leftLiveCam, 1 << otherRidgeLayer, leftBoxOtherRidgeRT);
+        Camera rightLiveBoxRidgeCam = EnsureBoxCamera(scene, RightLiveBoxRidgeCamName, rightLiveCam, 1 << otherRidgeLayer, rightBoxOtherRidgeRT);
 
         // --- 6.5. Far At Infinity 用の Observer（この錐を実際に描画する左右カメラ）を配線する ---
         // Cone_Other はライブ視野（LeftLiveBoxCam/RightLiveBoxCam），
@@ -331,7 +393,7 @@ public static class ConeGuideSceneUpgrader
         {
             host = leftRawImage.gameObject,
             rawImage = leftRawImage,
-            bgLive = leftEyeCaptureCam.targetTexture,
+            bgLive = leftLiveBgTexture,
             bgGhost = leftPlaybackRT,
             boxOtherRT = leftBoxOtherRT,
             boxSelfRT = leftBoxSelfRT,
@@ -348,7 +410,7 @@ public static class ConeGuideSceneUpgrader
         {
             host = rightRawImage.gameObject,
             rawImage = rightRawImage,
-            bgLive = rightEyeCaptureCam.targetTexture,
+            bgLive = rightLiveBgTexture,
             bgGhost = rightPlaybackRT,
             boxOtherRT = rightBoxOtherRT,
             boxSelfRT = rightBoxSelfRT,
@@ -382,8 +444,9 @@ public static class ConeGuideSceneUpgrader
             "シーン: " + scene.name + "\n\n" +
             "Cone_Other → " + ghostAnchor.name + " に追従\n" +
             "Cone_Self  → " + liveAnchor.name + " に追従\n\n" +
-            "左目: " + LeftEyeCaptureName + " 系統一式（" + LeftLiveBoxCamName + " 等）\n" +
-            "右目: " + RightEyeCaptureName + " 系統一式（" + RightLiveBoxCamName + " 等）\n" +
+            "ライブ側映像取得元: " + leftLiveCam.name + " / " + rightLiveCam.name + "\n" +
+            "左目: " + LeftLiveBoxCamName + " 等\n" +
+            "右目: " + RightLiveBoxCamName + " 等\n" +
             "収録視点: " + LeftGhostCameraName + " / " + RightGhostCameraName
             + "（GhostEyeOffset がライブ側の実IPDに追従）\n\n" +
             "OVRCameraRig.usePerEyeCameras を有効化し、LeftCanvas/RightCanvasを表示、\n" +
@@ -396,7 +459,10 @@ public static class ConeGuideSceneUpgrader
             "シーンに残っている場合は、もう使われないため手動で削除してください。\n\n" +
             "実験中の錐ガイド ON/OFF（K キー）は FollowingExperimentManager /\n" +
             "ReplayPlayer が左目用・右目用の ChannelCompositor 両方に反映します。\n\n" +
-            "【未対応】再生確認シーン（ViewpointFollowingReplay.unity）はまだ両眼化していません。\n\n" +
+            "本メニューは ViewpointFollowing.unity（実験シーン）・\n" +
+            "ViewpointFollowingReplay.unity（再生確認シーン）の両方に対応しています。\n" +
+            "再生確認シーンでは OVRCameraRig を含む Player.prefab を自動追加し、\n" +
+            "LiveReplayCamera から左目用・右目用の子カメラを新設します。\n\n" +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -411,7 +477,11 @@ public static class ConeGuideSceneUpgrader
     {
         Scene scene = SceneManager.GetActiveScene();
         var previewCams = new List<Camera>();
-        foreach (string name in new[] { LeftEyeCaptureName, RightEyeCaptureName, "CenterEyeCapture", "LiveReplayCamera" })
+        foreach (string name in new[]
+        {
+            LeftEyeCaptureName, RightEyeCaptureName, "CenterEyeCapture",
+            LeftLiveReplayCamName, RightLiveReplayCamName, "LiveReplayCamera",
+        })
         {
             Camera cam = FindCamera(scene, name);
             if (cam != null) previewCams.Add(cam);
@@ -495,6 +565,41 @@ public static class ConeGuideSceneUpgrader
         AssetDatabase.SaveAssets();
         Debug.Log("[ConeGuideSceneUpgrader] レイヤを登録しました: " + target + " = " + layerName);
         return target;
+    }
+
+    /// <summary>
+    /// HMDへの出力経路（<c>OVRCameraRig</c>を含むPlayer.prefab）が無ければ非破壊的に追加する．
+    /// 再生確認シーン（ViewpointFollowingReplay.unity）は元々OVRCameraRigを持たないため，
+    /// このメソッドが無いと10 §2.6の両眼立体視インフラ（LeftEyeAnchor等）が存在せず，
+    /// 以降の配線処理が全て失敗する．既にLeftEyeAnchorがあれば何もしない（冪等）．
+    /// </summary>
+    private static void EnsurePlayerRig(Scene scene)
+    {
+        if (FindFirst(scene, new[] { LeftEyeAnchorName }) != null) return; // 既にある（冪等）
+
+        GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(PlayerPrefabPath);
+        if (prefab == null)
+        {
+            Debug.LogWarning("[ConeGuideSceneUpgrader] Player プレハブが見つかりません: " + PlayerPrefabPath);
+            return;
+        }
+
+        GameObject player = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+        Undo.RegisterCreatedObjectUndo(player, "Add Player rig");
+        player.transform.position = Vector3.zero;
+
+        // 再生確認シーンでは視点はCSV再生（LiveReplayCamera/GhostReplayCamera）が担うため，
+        // Player.prefab側の視野反転・移動コントローラは全て無効化する（引継ぎ資料の方針どおり）．
+        foreach (var reversion in player.GetComponentsInChildren<SetReversion>(true)) reversion.enabled = false;
+        foreach (var playerInput in player.GetComponentsInChildren<PlayerInput>(true)) playerInput.enabled = false;
+        foreach (var b in player.GetComponentsInChildren<Behaviour>(true))
+        {
+            if (b != null && b.GetType().Name == "OVRPlayerController") b.enabled = false;
+        }
+        foreach (var charCtrl in player.GetComponentsInChildren<CharacterController>(true)) charCtrl.enabled = false;
+
+        Debug.Log("[ConeGuideSceneUpgrader] " + player.name + " (Player.prefab) をシーンに追加しました"
+            + "（両眼立体視のHMD出力経路として使用。SetReversion/PlayerInput/OVRPlayerController/CharacterControllerは無効化）");
     }
 
     /// <summary>

@@ -126,6 +126,8 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 
 この結果、Far At Infinityが有効な間に新設されるレイヤは`ConeOtherFarLeft`/`ConeOtherFarRight`/`ConeSelfFarLeft`/`ConeSelfFarRight`の4つ（既存の`ConeOtherFar`/`ConeOtherRidge`と合わせ、Far At Infinity対応だけで6レイヤを消費する）。プロジェクト全体のレイヤ予算（8〜31番の24枠）を圧迫するため、実装が進んだ段階で使用状況を確認すること。
 
+**実機確認結果**: 上記1の設計どおり、Far At Infinity有効時は稜線の終端と実際の遠断面（左右に分離して浮遊する箱）が視覚的に接続されない見た目になることを実機で確認した。ユーザーはこれを不具合として調査を依頼したが、原因（意図的なトレードオフであること）を説明した上で、**現状の仕様（稜線は常に本来の遠断面位置＝頂点基準を指す）を受け入れる**という判断を得た。稜線を左右分離まで追従させる追加実装は行わない。
+
 ### 3.4 出力経路
 
 ```
@@ -153,7 +155,7 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 | `ConeGuideSceneUpgrader.cs` | 大幅拡張。カメラ・RT・DelayedFrameBufferの生成ロジックを左右分に倍化し、`LeftEyeCapture`/`RightEyeCapture`配下への配線を追加。`ReversedVision`のスクリプトには依存させない（2.6） |
 | `ViewpointFollowingSceneBuilder.cs` | `usePerEyeCameras = false`の解除、`LeftCanvas`/`RightCanvas`の有効化ロジックに変更 |
 | `FollowingLogger.cs` / `TrajectoryRecorder.cs` | 記録対象は頭部6DOF（`CenterEyeAnchor`）のままで変更不要（両眼化しても記録形式は変わらない） |
-| `ReplayPlayer.cs` / 再生確認シーン | **両眼化する**（2.8）。記録済み軌跡（単眼6DOF）を両眼で再レンダリングし直すだけで済むが、Near/Far/Ridge一式の複製カメラを再生確認シーンにも用意する必要があるため、作業量は実験シーンと同程度になる見込み |
+| `ReplayPlayer.cs` / 再生確認シーン | **両眼化した**（2.8・6.6）。`ConeGuideSceneUpgrader.cs`の汎用化により、`LiveReplayCamera`から左目用・右目用の子カメラを新設する形でNear/Far/Ridge一式の複製カメラを配線済み |
 
 ---
 
@@ -175,7 +177,7 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 | 1 | `ConeGuideLayers.cs`: Far At Infinity用の左目/右目別レイヤ（ConeOtherFarLeft/Right）を追加 | 完了 |
 | 2 | `ConeGuide.cs`: 遠断面のFar At Infinityを左目/右目別メッシュに分岐（ConeSelfFarLeft/Right含む） | 完了 |
 | 3 | `ChannelCompositor.cs`: `mirrorFrom`パターンで提示条件を左右共有 | 完了 |
-| 4 | `ConeGuideSceneUpgrader.cs`: 左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線 | 完了（ViewpointFollowing.unityのみ対応） |
+| 4 | `ConeGuideSceneUpgrader.cs`: 左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線 | 完了（ViewpointFollowing.unity・ViewpointFollowingReplay.unity両対応。§6.6） |
 | 5 | `ViewpointFollowingSceneBuilder.cs`: `usePerEyeCameras`解除・Canvas有効化 | 完了 |
 
 当初計画していた5段階はすべて完了した。段階4・5の実装過程で新たに判明した残作業は
@@ -197,10 +199,11 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 3. **箱チャンネル・ガイドチャンネルの遠断面入力の Culling Mask は，Far At Infinity の
    有効/無効どちらでも動くよう「無効時の共通レイヤ」と「有効時のその目専用レイヤ」の
    両方を含める**必要がある（同時に中身を持つのは常にどちらか一方だけなので安全）
-4. **再生確認シーン（ViewpointFollowingReplay.unity）は今回のスコープ外**。`OVRCameraRig`
+4. **再生確認シーン（ViewpointFollowingReplay.unity）は当初スコープ外としていた**。`OVRCameraRig`
    を持たないため，`LeftEyeCapture`等の休眠インフラが存在しない。§2.8の決定自体は
-   変更しないが，具体的な実装は別途行う必要があると判明した（現状はこのシーンで
-   メニューを実行するとエラーダイアログを出して中断する）
+   変更しないが，具体的な実装は別途行う必要があると判明した（当時はこのシーンで
+   メニューを実行するとエラーダイアログを出して中断していた）。
+   → **解決済み**（§6.6）。`ConeGuideSceneUpgrader.cs`を汎用化し，両シーンに対応した
 5. **錐ガイドのON/OFF（Kキー等，実験制御）を両目のChannelCompositorへ反映する対応**。
    `ChannelCompositor.mirrorFrom`は提示条件（パラメータ）の同期のみを行い，`enabled`
    （コンポーネント自体の有効/無効）は同期できない（無効化されたコンポーネントは
@@ -288,5 +291,48 @@ ChannelCompositor本体そのもの）ため，同期漏れ・タイミングず
 
 これにより`ExperimentRig`のInspectorだけで，モード切替キー（K/G/C/B等）で
 操作する項目も含めて，錐ガイドに関する設定のほぼすべてを完結して編集できる。
-`ReplayPlayer`（再生確認シーン用）にも同じ手法を適用できるが，再生確認シーンは
-§6.1-4のとおり両眼化のスコープ外のため未対応（必要になれば同じパターンで追加できる）。
+`ReplayPlayer`（再生確認シーン用）にも同じ手法を適用できるが，現時点では未対応
+（必要になれば同じパターンで追加できる）。
+
+### 6.6 再生確認シーンの両眼化 — ConeGuideSceneUpgraderの汎用化
+
+§6.1-4で「今回のスコープ外」としていた再生確認シーン（`ViewpointFollowingReplay.unity`）
+について，改めて両眼化を実施した。`BuildReplayScene()`（`ViewpointFollowingSceneBuilder.cs`）
+を再実行してシーンを作り直す方式は，ユーザーが既に構築・調整済みの実シーンを破壊するため
+採らず，`ConeGuideSceneUpgrader.cs`（既存シーンに非破壊的に差分を足す，実際にユーザーが
+使うツール）を汎用化して両シーンに対応させる方針とした。
+
+**課題**: 実験シーン（`ViewpointFollowing.unity`）は元々`OVRCameraRig`を含む
+`Player.prefab`が配置済みで，`LeftEyeCapture`/`RightEyeCapture`（実機トラッキング）を
+ライブ側の映像取得元としてそのまま使えた。一方，再生確認シーンは`OVRCameraRig`を
+持たず，ライブ側の視点は単一の`LiveReplayCamera`（CSV再生でスクリプト駆動，実機
+トラッキングされない）のみである。
+
+**対応**:
+
+1. **`EnsurePlayerRig(Scene scene)`を新設**。`LeftEyeAnchor`が見つからない場合のみ，
+   `Assets/Prefabs/Player.prefab`（`OVRCameraRig`を含む）を非破壊的にシーンへ追加する
+   （既にあれば何もしない＝冪等）。追加したPlayer.prefab側の視野反転
+   （`SetReversion`）・移動コントローラ（`PlayerInput`/`OVRPlayerController`/
+   `CharacterController`）は，再生確認シーンでは視点をCSV再生が担うため全て無効化する。
+   呼び出し順に注意が必要で，**ライブ視点/収録視点（`liveAnchor`/`ghostAnchor`）の
+   検索より後**に呼ぶ（`LiveAnchorNames`の検索順は`{ "CenterEyeAnchor",
+   "LiveReplayCamera" }`のため，先にPlayer.prefabを追加してしまうと，新設された
+   `CenterEyeAnchor`が誤って「ライブ視点」として拾われ，既存の`LiveReplayCamera`が
+   無視されてしまう）
+2. **ライブ側の映像取得元の決定を分岐**。`LeftEyeCapture`/`RightEyeCapture`が直接
+   見つかる場合（実験シーン）はそれをそのまま使う。見つからない場合（再生確認シーン）は，
+   `LiveReplayCamera`から`LeftLiveReplayCam`/`RightLiveReplayCam`という左目用・右目用の
+   子カメラを新設する——これは収録視点側（`GhostCamera`→`LeftGhostCamera`/
+   `RightGhostCamera`）で既に確立していたパターンと全く同じで，`EnsureEnvironmentCamera`
+   と`GhostEyeOffset`（実測IPDが無いため`LiveReplayCamera`の実測IPD＝ライブ側の
+   `LeftEyeAnchor`/`RightEyeAnchor`間距離を毎フレーム反映）をそのまま再利用した
+3. **`LeftLiveReplayCam`/`RightLiveReplayCam`は`BoxCameraNames`に含めない**。
+   `GhostCamera`と同じ「環境を映すだけのカメラ」という扱いのため，既存カメラからの
+   錐レイヤ除外処理（`ExcludeConeLayersFromExistingCameras`）の対象に含め，
+   箱・ガイド専用カメラ（`BoxCameraNames`）とは区別した
+
+これにより，`ConeGuideSceneUpgrader`は実験シーン・再生確認シーンのどちらに対しても
+同一のメニュー操作（Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加）で両眼化
+できるようになった。完了ダイアログ・プレビュー切替メニュー（`TogglePreview`）の
+検索対象カメラ一覧も両シーンに対応する内容へ更新した。
