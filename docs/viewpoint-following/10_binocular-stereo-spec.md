@@ -113,9 +113,18 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 
 - 近断面・稜線用の`MeshBuffer`（`near`/`ridge`）は**引き続き1つのまま**（Far At Infinityの有無に関わらず左右で共有できるため。2.5参照）
 - 遠断面用の`MeshBuffer`は`farAtInfinity`が**OFF**のときは従来どおり1つ（`far`）のまま、**ON**のときだけ`farLeft`/`farRight`の2つに分岐させ、`ComputeFarAnchor()`をそれぞれ`observerLeft`/`observerRight`（左目・右目の実カメラ）で個別に計算する
-- 遠断面の子オブジェクト・レイヤも同様に、`farAtInfinity`がONのときだけ`ConeOtherFarLeft`/`ConeOtherFarRight`の2レイヤ・2子オブジェクトに分かれ、OFFのときは既存の`ConeOtherFar`1つのまま（`EnsureSplitChild`と同じ遅延生成パターンを流用）
+- 遠断面の子オブジェクト・レイヤも同様に、`farAtInfinity`がONのときだけ2レイヤ・2子オブジェクトに分かれ、OFFのときは既存の単一レイヤのまま（`EnsureSplitChild`と同じ遅延生成パターンを流用）
 
 `ConeGuide`コンポーネント自体は`Cone_Other`1つのまま——「どちらのCone_Otherを編集すればよいか分からない」という混乱を避けられる。ユーザーから見た変化は、Far At Infinityを有効にした瞬間だけ内部的にレイヤ・カメラが1本増える、という程度になる。
+
+#### 3.3.1 実装時に判明した補正（当初案からの変更点）
+
+上記の当初案には2つの見落としがあり、`ConeGuide.cs`の実装時に修正した:
+
+1. **稜線の遠い側の端も`farAnchor`を使っていた**。Far At Infinity中の遠断面は左目・右目で別々の場所に「浮遊」する実体のない基準枠になるため、稜線をそこへ接続しようとすると稜線自体も左右で別々のジオメトリが必要になり、稜線用レイヤまで`RidgeLeft`/`RidgeRight`に分岐する事態になる。これを避けるため、**稜線の遠い側の端は`farAtInfinity`の値に関わらず常に頂点基準（`FarAnchor.Identity`）に固定する**よう変更した。副作用として、Far At Infinity有効時は稜線の終端と実際に見える遠断面の位置がわずかに食い違う（稜線は「無限遠モードが無かったときの遠断面位置」を指す）が、両者を無理に接続する複雑さを避ける方を優先した
+2. **`farAtInfinity`はCone_Selfにも同期される共有パラメータ**（`mirrorFrom`経由）であるにもかかわらず、当初案は`Split`（`kind==Other`のときだけ真）を左右分離のトリガーにしていた。これだとCone_OtherでFar At Infinityを有効にした瞬間、`mirrorFrom`で追随するCone_Self側の遠断面が左右分離されないまま（単一メッシュのまま）両目のカメラに同じ内容で描画され、二重像の原因になる。実際には**遠断面の左右分離は`farAtInfinity`単独をトリガーにし、`kind`（Other/Self）とは独立**させる必要があると判明した。`ConeGuideLayers.cs`に`ConeSelfFarLeft`/`ConeSelfFarRight`レイヤを追加し、`ConeOtherFarLeft`/`ConeOtherFarRight`と対になる形にした（レイヤ番号 22/23）
+
+この結果、Far At Infinityが有効な間に新設されるレイヤは`ConeOtherFarLeft`/`ConeOtherFarRight`/`ConeSelfFarLeft`/`ConeSelfFarRight`の4つ（既存の`ConeOtherFar`/`ConeOtherRidge`と合わせ、Far At Infinity対応だけで6レイヤを消費する）。プロジェクト全体のレイヤ予算（8〜31番の24枠）を圧迫するため、実装が進んだ段階で使用状況を確認すること。
 
 ### 3.4 出力経路
 
@@ -138,8 +147,8 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 
 | 対象 | 変更要否 |
 |---|---|
-| `ConeGuide.cs` | Far At InfinityがONのときだけ遠断面をfarLeft/farRightに分岐させる処理を追加（3.3）。既定条件のジオメトリ計算は簡略化できる（2.5） |
-| `ConeGuideLayers.cs` | Far At Infinity用にConeOtherFarLeft/ConeOtherFarRightレイヤを追加（既定のConeOtherFarは維持） |
+| `ConeGuide.cs` | Far At InfinityがONのときだけ遠断面をfarLeft/farRightに分岐させる処理を追加（3.3・3.3.1）。既定条件のジオメトリ計算は簡略化できる（2.5）。稜線の遠い側の端は常に頂点基準に固定（3.3.1） |
+| `ConeGuideLayers.cs` | Far At Infinity用にConeOtherFarLeft/Right・ConeSelfFarLeft/Rightの4レイヤを追加（既定のConeOtherFarは維持。3.3.1） |
 | `ChannelCompositor.cs` / `ChannelComposite.shader` | シェーダは変更なし。`ChannelCompositor.cs`に`mirrorFrom`同期（2.7）を追加した上で2インスタンス化 |
 | `ConeGuideSceneUpgrader.cs` | 大幅拡張。カメラ・RT・DelayedFrameBufferの生成ロジックを左右分に倍化し、`LeftEyeCapture`/`RightEyeCapture`配下への配線を追加。`ReversedVision`のスクリプトには依存させない（2.6） |
 | `ViewpointFollowingSceneBuilder.cs` | `usePerEyeCameras = false`の解除、`LeftCanvas`/`RightCanvas`の有効化ロジックに変更 |

@@ -15,6 +15,12 @@ using UnityEngine;
 /// 両眼立体視化に伴い，遠断面の再アンカリング（<see cref="ConeGuide"/> の FarAnchor）を
 /// 左目・右目それぞれの実カメラ基準で個別に計算する必要があるため。Far At Infinity が
 /// 無効な間は既定の <see cref="ConeOtherFarName"/> レイヤ1つのままで，左右レイヤは使わない。
+///
+/// <b>この左目用／右目用の分離は kind（Other/Self）を問わず必要</b>である。farAtInfinity は
+/// mirrorFrom で Cone_Self にも同期される共有パラメータなので（09 仕様），Cone_Other だけでなく
+/// Cone_Self も Far At Infinity 有効時は最遠断面が左右分離する。そのため Cone_Self 用にも
+/// 専用の <see cref="ConeSelfFarLeftName"/>／<see cref="ConeSelfFarRightName"/> レイヤを用意する
+/// （Cone_Self は近断面／遠断面／稜線の3分割こそしないが，Far At Infinity の左右分離だけは行う）。
 /// </summary>
 /// <remarks>
 /// レイヤ番号は ProjectSettings/TagManager.asset の空き（16 以降）を使う．
@@ -51,6 +57,17 @@ public static class ConeGuideLayers
     /// </summary>
     public const string ConeOtherFarRightName = "ConeOtherFarRight";
 
+    /// <summary>
+    /// Cone_Self の遠断面（左目用）が乗るレイヤ名．Far At Infinity 有効時のみ使う（10 §3.3 拡張）．
+    /// Cone_Self は近断面／遠断面／稜線を3分割しないが，Far At Infinity の左右分離だけは行う．
+    /// </summary>
+    public const string ConeSelfFarLeftName = "ConeSelfFarLeft";
+
+    /// <summary>
+    /// Cone_Self の遠断面（右目用）が乗るレイヤ名．Far At Infinity 有効時のみ使う（10 §3.3 拡張）．
+    /// </summary>
+    public const string ConeSelfFarRightName = "ConeSelfFarRight";
+
     /// <summary>ConeOther（近断面）の既定レイヤ番号（TagManager の空き枠）</summary>
     public const int ConeOtherIndex = 16;
 
@@ -68,6 +85,12 @@ public static class ConeGuideLayers
 
     /// <summary>ConeOtherFarRight の既定レイヤ番号（TagManager の空き枠）</summary>
     public const int ConeOtherFarRightIndex = 21;
+
+    /// <summary>ConeSelfFarLeft の既定レイヤ番号（TagManager の空き枠）</summary>
+    public const int ConeSelfFarLeftIndex = 22;
+
+    /// <summary>ConeSelfFarRight の既定レイヤ番号（TagManager の空き枠）</summary>
+    public const int ConeSelfFarRightIndex = 23;
 
     /// <summary>
     /// レイヤ名から番号を解決する（未登録なら既定番号にフォールバックし，警告を出す）
@@ -100,13 +123,20 @@ public static class ConeGuideLayers
     /// <summary>Cone_Other の遠断面（右目用，Far At Infinity 有効時のみ使用）のレイヤ番号</summary>
     public static int OtherFarRightLayer { get { return Resolve(ConeOtherFarRightName, ConeOtherFarRightIndex); } }
 
+    /// <summary>Cone_Self の遠断面（左目用，Far At Infinity 有効時のみ使用）のレイヤ番号</summary>
+    public static int SelfFarLeftLayer { get { return Resolve(ConeSelfFarLeftName, ConeSelfFarLeftIndex); } }
+
+    /// <summary>Cone_Self の遠断面（右目用，Far At Infinity 有効時のみ使用）のレイヤ番号</summary>
+    public static int SelfFarRightLayer { get { return Resolve(ConeSelfFarRightName, ConeSelfFarRightIndex); } }
+
     /// <summary>全レイヤを含むビットマスク（既存カメラから除外するときに使う）</summary>
     public static int GuideMask
     {
         get
         {
             return (1 << OtherLayer) | (1 << SelfLayer) | (1 << OtherFarLayer) | (1 << OtherRidgeLayer)
-                | (1 << OtherFarLeftLayer) | (1 << OtherFarRightLayer);
+                | (1 << OtherFarLeftLayer) | (1 << OtherFarRightLayer)
+                | (1 << SelfFarLeftLayer) | (1 << SelfFarRightLayer);
         }
     }
 }

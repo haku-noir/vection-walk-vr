@@ -47,11 +47,20 @@ public class ConeGuide : MonoBehaviour
     public ConeKind kind = ConeKind.Other;
 
     /// <summary>
-    /// この錐を実際に描画するカメラ（箱カメラ）の視点．<b>Far At Infinity</b> のときだけ使う．
-    /// Other なら LiveBoxCam，Self なら GhostBoxCam（ConeGuideSceneUpgrader が自動配線する）．
+    /// この錐を実際に描画する<b>左目用</b>カメラ（箱カメラ）の視点．<b>Far At Infinity</b> の
+    /// ときだけ使う．Other なら LeftLiveBoxCam，Self なら LeftGhostBoxCam
+    /// （ConeGuideSceneUpgrader が自動配線する。10 仕様 §2.3 拡張）．
     /// </summary>
-    [Tooltip("この錐を描画するカメラの視点（Other=LiveBoxCam / Self=GhostBoxCam）。Far At Infinity でのみ使用")]
-    public Transform observer;
+    [Tooltip("この錐を描画する左目用カメラの視点（Other=LeftLiveBoxCam / Self=LeftGhostBoxCam）。Far At Infinity でのみ使用")]
+    public Transform observerLeft;
+
+    /// <summary>
+    /// この錐を実際に描画する<b>右目用</b>カメラ（箱カメラ）の視点．<b>Far At Infinity</b> の
+    /// ときだけ使う．Other なら RightLiveBoxCam，Self なら RightGhostBoxCam
+    /// （ConeGuideSceneUpgrader が自動配線する。10 仕様 §2.3 拡張）．
+    /// </summary>
+    [Tooltip("この錐を描画する右目用カメラの視点（Other=RightLiveBoxCam / Self=RightGhostBoxCam）。Far At Infinity でのみ使用")]
+    public Transform observerRight;
 
     [Header("幾何（仕様 09 §3.1）")]
     /// <summary>近断面距離 d1[m]（既定 1.0m）</summary>
@@ -66,14 +75,25 @@ public class ConeGuide : MonoBehaviour
     /// <summary>
     /// 遠断面を実質無限遠として扱うか（既定 OFF）．
     ///
-    /// ON にすると，遠断面（と側稜の遠い側の端）は頂点(<see cref="target"/>)ではなく
-    /// <see cref="observer"/>（この錐を実際に描画するカメラ）の<b>位置と向きの両方</b>を
-    /// 基準に再配置される．これにより，頂点と観測者の間の<b>並進誤差（横ズレ δ・前後ズレ D）</b>
-    /// だけでなく<b>回転誤差（ヨー等）</b>の影響も打ち消され，遠断面は画面上で
-    /// <b>完全に静止したリファレンス枠</b>になる（位置・サイズ・向きのいずれも変化しない）．
-    /// 誤差の手がかりは近断面だけが担う形になる．
+    /// ON にすると，遠断面は頂点(<see cref="target"/>)ではなく<see cref="observerLeft"/>／
+    /// <see cref="observerRight"/>（この錐を実際に描画する左目用・右目用カメラ）の
+    /// <b>位置と向きの両方</b>を基準に再配置される．これにより，頂点と観測者の間の
+    /// <b>並進誤差（横ズレ δ・前後ズレ D）</b>だけでなく<b>回転誤差（ヨー等）</b>の影響も
+    /// 打ち消され，遠断面は画面上で<b>完全に静止したリファレンス枠</b>になる
+    /// （位置・サイズ・向きのいずれも変化しない）．誤差の手がかりは近断面だけが担う形になる．
+    ///
+    /// 両眼立体視化（10 仕様 §2.3・§2.5）に伴い，遠断面は左目用・右目用のカメラ位置を
+    /// それぞれ基準に再アンカリングした<b>2つの独立したメッシュ</b>（左目にしか映らないもの・
+    /// 右目にしか映らないもの）になる．OFF のときは通常のワールド座標上の3Dオブジェクトとして
+    /// 扱われ，左右カメラの実際の透視投影が自動的に正しい両眼視差を生成するため，
+    /// 再アンカリングは不要（単一のメッシュを両目のカメラで共有できる）．
+    ///
+    /// 側稜（<see cref="drawRidges"/>）の遠い側の端は，このフラグの値に関わらず常に
+    /// 頂点基準（<see cref="target"/>から見た実際の距離 d2 の位置）のままである。ON のときの
+    /// 遠断面は3D空間上の実在位置を持たない「浮遊するリファレンス枠」になるため，稜線を
+    /// そこへ接続する意味がなく，稜線と遠断面の見た目が一致しなくなる（10 仕様検討時に判明）．
     /// </summary>
-    [Tooltip("遠断面を画面上に完全固定する（並進・回転どちらの誤差にも反応しない）。Observer の設定が必要")]
+    [Tooltip("遠断面を画面上に完全固定する（並進・回転どちらの誤差にも反応しない）。Observer Left/Right の設定が必要")]
     public bool farAtInfinity = false;
 
     /// <summary>開き半角 α[deg]（既定 15° = 見かけ直径30°）</summary>
@@ -169,6 +189,15 @@ public class ConeGuide : MonoBehaviour
     private Mesh farMesh;
     private Mesh ridgeMesh;
 
+    // ---- 遠断面の左目/右目分離（farAtInfinity が有効なときだけ．10 §3.3 拡張） ----
+    // Split の有無（kind）に関わらず，Far At Infinity が有効な間はどちらの kind でも
+    // 遠断面が左目用・右目用の2つの独立したメッシュ・オブジェクト・レイヤに分かれる。
+    // OFF の間はどちらの kind も使わない（kind=Other なら far、kind=Self なら near に含まれる）
+    private GameObject farLeftObject;
+    private GameObject farRightObject;
+    private Mesh farLeftMesh;
+    private Mesh farRightMesh;
+
     /// <summary>近断面・遠断面・稜線を3つの独立したオブジェクト・レイヤに分離するか</summary>
     private bool Split { get { return kind == ConeKind.Other; } }
 
@@ -192,14 +221,19 @@ public class ConeGuide : MonoBehaviour
     private readonly MeshBuffer near = new MeshBuffer();
     private readonly MeshBuffer far = new MeshBuffer();
     private readonly MeshBuffer ridge = new MeshBuffer();
+    // farAtInfinity が有効な間だけ使う，遠断面の左目用・右目用バッファ
+    private readonly MeshBuffer farLeft = new MeshBuffer();
+    private readonly MeshBuffer farRight = new MeshBuffer();
 
     /// <summary>形状パラメータの変更検知用（前回ビルド時の値）</summary>
     private GeometryKey lastKey;
     private bool meshDirty = true;
     /// <summary>相互参照の警告を1回だけ出すためのフラグ</summary>
     private bool mirrorCycleWarned;
-    /// <summary>Far At Infinity が有効なのに Observer 未設定の警告を1回だけ出すためのフラグ</summary>
-    private bool observerMissingWarned;
+    /// <summary>Far At Infinity が有効なのに ObserverLeft 未設定の警告を1回だけ出すためのフラグ</summary>
+    private bool leftObserverMissingWarned;
+    /// <summary>Far At Infinity が有効なのに ObserverRight 未設定の警告を1回だけ出すためのフラグ</summary>
+    private bool rightObserverMissingWarned;
 
     /// <summary>現在の断面距離（近い順）．HUD・デバッグ用</summary>
     public float NearDistance { get { return Mathf.Min(nearDistance, farDistance); } }
@@ -215,7 +249,7 @@ public class ConeGuide : MonoBehaviour
         get
         {
             float d1 = NearDistance;
-            if (farAtInfinity && observer != null)
+            if (farAtInfinity && (observerLeft != null || observerRight != null))
             {
                 return d1 > 0f ? 1f / d1 : 0f;
             }
@@ -273,7 +307,7 @@ public class ConeGuide : MonoBehaviour
         // 形状パラメータが変わっていたらメッシュを作り直す．
         // Far At Infinity 中は Observer が毎フレーム動くため，その間は常に作り直す
         GeometryKey key = GeometryKey.From(this);
-        bool infinityTracksObserver = farAtInfinity && observer != null;
+        bool infinityTracksObserver = farAtInfinity && (observerLeft != null || observerRight != null);
         if (meshDirty || !key.Equals(lastKey) || infinityTracksObserver)
         {
             BuildMesh(apexPos, apexRot);
@@ -356,20 +390,39 @@ public class ConeGuide : MonoBehaviour
     /// <summary>
     /// 種別に応じたレイヤを自分自身（近断面）に設定する．Split のときは
     /// 遠断面・稜線の子オブジェクトにもそれぞれ専用レイヤを設定する（09 §3.7 拡張）．
+    /// Far At Infinity が有効なときは，遠断面の左目用・右目用の子オブジェクトにも
+    /// kind に応じた専用レイヤを設定する（10 §3.3 拡張）．
     /// </summary>
     private void ApplyLayer()
     {
-        int layer = (kind == ConeKind.Other) ? ConeGuideLayers.OtherLayer : ConeGuideLayers.SelfLayer;
+        bool isOther = kind == ConeKind.Other;
+        int layer = isOther ? ConeGuideLayers.OtherLayer : ConeGuideLayers.SelfLayer;
         if (gameObject.layer != layer) gameObject.layer = layer;
 
-        if (!Split) return;
-        if (farObject != null && farObject.layer != ConeGuideLayers.OtherFarLayer)
+        if (Split)
         {
-            farObject.layer = ConeGuideLayers.OtherFarLayer;
+            if (farObject != null && farObject.layer != ConeGuideLayers.OtherFarLayer)
+            {
+                farObject.layer = ConeGuideLayers.OtherFarLayer;
+            }
+            if (ridgeObject != null && ridgeObject.layer != ConeGuideLayers.OtherRidgeLayer)
+            {
+                ridgeObject.layer = ConeGuideLayers.OtherRidgeLayer;
+            }
         }
-        if (ridgeObject != null && ridgeObject.layer != ConeGuideLayers.OtherRidgeLayer)
+
+        if (farAtInfinity)
         {
-            ridgeObject.layer = ConeGuideLayers.OtherRidgeLayer;
+            int farLeftLayer = isOther ? ConeGuideLayers.OtherFarLeftLayer : ConeGuideLayers.SelfFarLeftLayer;
+            int farRightLayer = isOther ? ConeGuideLayers.OtherFarRightLayer : ConeGuideLayers.SelfFarRightLayer;
+            if (farLeftObject != null && farLeftObject.layer != farLeftLayer)
+            {
+                farLeftObject.layer = farLeftLayer;
+            }
+            if (farRightObject != null && farRightObject.layer != farRightLayer)
+            {
+                farRightObject.layer = farRightLayer;
+            }
         }
     }
 
@@ -388,14 +441,14 @@ public class ConeGuide : MonoBehaviour
     }
 
     /// <summary>
-    /// 断面 N 枚の枠と側稜 4 本を，太さを持つ角柱として1つのメッシュに組み立てる．
+    /// 断面 N 枚の枠と側稜 4 本を，太さを持つ角柱として1つ以上のメッシュに組み立てる．
     /// </summary>
     /// <param name="apexPos">頂点(<see cref="target"/>)のワールド座標（この錐の今フレームの位置）</param>
     /// <param name="apexRot">頂点の姿勢処理後の回転（この錐の今フレームの回転）</param>
     /// <remarks>
-    /// <b>Far At Infinity</b>（<see cref="farAtInfinity"/>）が有効なとき，最遠断面と
-    /// 側稜の遠い側の端だけは，頂点ではなく <see cref="observer"/>（この錐を描画するカメラ）
-    /// の<b>位置と向きの両方</b>を基準に再アンカリングする．
+    /// <b>Far At Infinity</b>（<see cref="farAtInfinity"/>）が有効なとき，最遠断面だけは
+    /// 頂点ではなく <see cref="observerLeft"/>／<see cref="observerRight"/>（この錐を描画する
+    /// 左目用・右目用カメラ）の<b>位置と向きの両方</b>を基準に，左右それぞれ独立に再アンカリングする．
     ///
     /// ワールド座標は通常 <c>apexPos + apexRot・localVertex</c> になる（メッシュのローカル座標
     /// はこの錐の Transform で変換されるため）．最遠断面のローカル頂点に
@@ -403,25 +456,42 @@ public class ConeGuide : MonoBehaviour
     /// を適用すると，
     /// <c>apexPos + apexRot・(offset + rotation・localDir) = observerPos + observerRot・localDir</c>
     /// となり，<b>頂点と観測者の間の並進（δ, D）も相対回転（θ）も式から完全に消える</b>．
-    /// この錐を描画するカメラは常に observer 自身なので（<see cref="ComputeFarAnchor"/> 参照），
-    /// 結果として最遠断面は<b>画面上に完全固定されたリファレンス枠</b>になる
-    /// （並進・回転どちらの誤差にも反応しない）．誤差の手がかりは近断面だけが担う．
-    /// d2 の値自体は見かけの角度に影響しない（方向だけで決まる）ので，線幅計算などは
-    /// そのまま d2 を使い続けてよい．
+    /// この錐を描画するカメラは常に observerLeft／observerRight 自身なので
+    /// （<see cref="ComputeFarAnchor"/> 参照），結果として最遠断面は各目の画面上に
+    /// <b>完全に静止したリファレンス枠</b>になる（並進・回転どちらの誤差にも反応しない）．
+    /// 誤差の手がかりは近断面だけが担う．d2 の値自体は見かけの角度に影響しない
+    /// （方向だけで決まる）ので，線幅計算などはそのまま d2 を使い続けてよい．
+    ///
+    /// Far At Infinity が有効な間，最遠断面は実世界の1点に対応しなくなる（左目・右目で
+    /// それぞれ異なる場所に「浮遊」する）ため，<b>側稜の遠い側の端は常に頂点基準
+    /// （<see cref="FarAnchor.Identity"/>）のままとする</b>。稜線を無限遠の最遠断面へ
+    /// 接続すると，稜線自体も左右で別々の見え方をする必要が生じ，構造が大きく複雑化する
+    /// 割に，浮遊するリファレンス枠と実世界の奥行き手がかりを混ぜること自体の意味が薄い
+    /// （10 仕様検討時の判断）．
     ///
     /// <see cref="Split"/> が true（kind=Other）のときは，最遠断面を <c>far</c>，
     /// 稜線を <c>ridge</c>，それ以外（近断面）を <c>near</c> という3つの独立した
     /// バッファに振り分け，それぞれ別の Mesh（<see cref="mesh"/> / <see cref="farMesh"/> /
     /// <see cref="ridgeMesh"/>）・別オブジェクト・別レイヤに割り当てる．false（kind=Self）
-    /// のときは全部を <c>near</c> にまとめ，従来どおり1つのメッシュにする．
+    /// のときは稜線・非最遠断面を <c>near</c> にまとめる．
+    ///
+    /// <see cref="farAtInfinity"/> が true のときは，kind に関わらず最遠断面だけは
+    /// <c>far</c>／<c>near</c> ではなく <c>farLeft</c>／<c>farRight</c> という左目用・右目用の
+    /// バッファへ振り分け，それぞれ別の Mesh（<see cref="farLeftMesh"/> / <see cref="farRightMesh"/>）・
+    /// 別オブジェクト・別レイヤ（kind ごとに異なる）に割り当てる．このとき <c>far</c> バッファは
+    /// 空のままになり（Split=true でも），対応する Mesh も空になって非表示になる．
     /// </remarks>
     private void BuildMesh(Vector3 apexPos, Quaternion apexRot)
     {
         bool split = Split;
+        bool stereoFar = farAtInfinity;
+
         near.Clear();
         far.Clear();
         ridge.Clear();
-        MeshBuffer farBuf = split ? far : near;
+        farLeft.Clear();
+        farRight.Clear();
+
         MeshBuffer ridgeBuf = split ? ridge : near;
 
         int n = Mathf.Clamp(sectionCount, 2, 4);
@@ -431,7 +501,8 @@ public class ConeGuide : MonoBehaviour
         // 線幅は角度指定．距離 d での「半」線幅 = d·tan(幅/2)（ワールド線幅 = 2·d·tan(幅/2)）
         float tanHalfWidth = Mathf.Tan(lineWidthDeg * 0.5f * Mathf.Deg2Rad);
 
-        FarAnchor farAnchor = ComputeFarAnchor(apexPos, apexRot);
+        FarAnchor farAnchorLeft = ComputeFarAnchor(apexPos, apexRot, observerLeft, ref leftObserverMissingWarned, "Left");
+        FarAnchor farAnchorRight = ComputeFarAnchor(apexPos, apexRot, observerRight, ref rightObserverMissingWarned, "Right");
 
         // --- 断面の枠（各 4 辺） ---
         for (int i = 0; i < n; i++)
@@ -441,22 +512,38 @@ public class ConeGuide : MonoBehaviour
             Color c = SectionColor(t);
             float half = d * tanHalfWidth;       // この断面での線の半太さ
             bool isFarthest = (i == n - 1);
-            Vector3[] corner = Corners(d, d * tanAlpha, isFarthest ? farAnchor : FarAnchor.Identity);
-            MeshBuffer buf = isFarthest ? farBuf : near;
 
-            for (int e = 0; e < 4; e++)
+            if (isFarthest && stereoFar)
             {
-                AddSegment(buf, corner[e], corner[(e + 1) % 4], half, half, c, c);
+                // Far At Infinity 中の最遠断面は左目・右目で別々に再アンカリングされるため，
+                // 実世界に1つの断面としては存在しない。左右それぞれのメッシュに分けて生成する
+                Vector3[] cornerLeft = Corners(d, d * tanAlpha, farAnchorLeft);
+                Vector3[] cornerRight = Corners(d, d * tanAlpha, farAnchorRight);
+                for (int e = 0; e < 4; e++)
+                {
+                    AddSegment(farLeft, cornerLeft[e], cornerLeft[(e + 1) % 4], half, half, c, c);
+                    AddSegment(farRight, cornerRight[e], cornerRight[(e + 1) % 4], half, half, c, c);
+                }
+            }
+            else
+            {
+                Vector3[] corner = Corners(d, d * tanAlpha, FarAnchor.Identity);
+                MeshBuffer buf = (isFarthest && split) ? far : near;
+                for (int e = 0; e < 4; e++)
+                {
+                    AddSegment(buf, corner[e], corner[(e + 1) % 4], half, half, c, c);
+                }
             }
         }
 
         // --- 側稜（4本）: 前後多義性の解消手段（仕様 §1.6） ---
+        // 遠い側の端は常に頂点基準（Far At Infinity の影響を受けない。上の <remarks> 参照）
         if (drawRidges)
         {
             // 既定は角錐台の側稜（最近断面〜最遠断面）．ON なら頂点まで延ばす
             float dStart = ridgeExtendToApex ? 0f : d1;
             Vector3[] a = Corners(dStart, dStart * tanAlpha, FarAnchor.Identity);
-            Vector3[] b = Corners(dN, dN * tanAlpha, farAnchor);
+            Vector3[] b = Corners(dN, dN * tanAlpha, FarAnchor.Identity);
             Color ca = SectionColor(0f);   // 手前側（頂点寄り）の色
             Color cb = SectionColor(1f);   // 最遠断面の色
 
@@ -473,6 +560,11 @@ public class ConeGuide : MonoBehaviour
             ApplyBuffer(farMesh, far);
             ApplyBuffer(ridgeMesh, ridge);
         }
+        if (stereoFar)
+        {
+            ApplyBuffer(farLeftMesh, farLeft);
+            ApplyBuffer(farRightMesh, farRight);
+        }
     }
 
     /// <summary>組み立てたバッファの内容を Mesh へ反映する</summary>
@@ -486,31 +578,36 @@ public class ConeGuide : MonoBehaviour
     }
 
     /// <summary>
-    /// Far At Infinity 用の再アンカリング（<see cref="FarAnchor"/>）を計算する．
-    /// 無効（OFF，または Observer 未設定）なら <see cref="FarAnchor.Identity"/>
-    /// （＝従来どおり頂点基準・回転もそのまま）を返す．
+    /// Far At Infinity 用の再アンカリング（<see cref="FarAnchor"/>）を，指定した目のカメラ
+    /// （<paramref name="observerTransform"/>）基準に計算する．無効（OFF，または該当する
+    /// Observer 未設定）なら <see cref="FarAnchor.Identity"/>（＝従来どおり頂点基準・回転も
+    /// そのまま）を返す．左目・右目それぞれに対して個別に呼び出す（10 §3.3 拡張）．
     /// </summary>
-    private FarAnchor ComputeFarAnchor(Vector3 apexPos, Quaternion apexRot)
+    /// <param name="observerTransform"><see cref="observerLeft"/> または <see cref="observerRight"/></param>
+    /// <param name="missingWarned">その目用の「未設定警告を出した」フラグ（呼び出し元が保持）</param>
+    /// <param name="eyeLabel">警告メッセージに出す目の名前（"Left"／"Right"）</param>
+    private FarAnchor ComputeFarAnchor(Vector3 apexPos, Quaternion apexRot,
+        Transform observerTransform, ref bool missingWarned, string eyeLabel)
     {
         if (!farAtInfinity) return FarAnchor.Identity;
 
-        if (observer == null)
+        if (observerTransform == null)
         {
-            if (!observerMissingWarned)
+            if (!missingWarned)
             {
-                Debug.LogWarning("[ConeGuide] " + name + ": Far At Infinity が有効ですが Observer が"
-                    + "未設定のため，通常の有限距離（頂点基準）として描画します。", this);
-                observerMissingWarned = true;
+                Debug.LogWarning("[ConeGuide] " + name + ": Far At Infinity が有効ですが Observer"
+                    + eyeLabel + " が未設定のため，そちらの目は通常の有限距離（頂点基準）として描画します。", this);
+                missingWarned = true;
             }
             return FarAnchor.Identity;
         }
-        observerMissingWarned = false;
+        missingWarned = false;
 
         Quaternion apexRotInv = Quaternion.Inverse(apexRot);
         return new FarAnchor
         {
-            offset = apexRotInv * (observer.position - apexPos),
-            rotation = apexRotInv * observer.rotation,
+            offset = apexRotInv * (observerTransform.position - apexPos),
+            rotation = apexRotInv * observerTransform.rotation,
         };
     }
 
@@ -651,12 +748,23 @@ public class ConeGuide : MonoBehaviour
             ReleaseSplitChildren();
         }
 
+        if (farAtInfinity)
+        {
+            EnsureSplitChild(ref farLeftObject, ref farLeftMesh, "ConeGuide_FarLeft");
+            EnsureSplitChild(ref farRightObject, ref farRightMesh, "ConeGuide_FarRight");
+        }
+        else
+        {
+            ReleaseStereoFarChildren();
+        }
+
         return true;
     }
 
     /// <summary>
-    /// 遠断面／稜線を独立レイヤで描くための子オブジェクト（MeshFilter+MeshRenderer）を
-    /// 用意する．メイン（近断面）と同じマテリアルを共有し，シーンには保存しない．
+    /// 遠断面／稜線／遠断面の左目用・右目用を独立レイヤで描くための子オブジェクト
+    /// （MeshFilter+MeshRenderer）を用意する．メイン（近断面）と同じマテリアルを共有し，
+    /// シーンには保存しない．
     /// </summary>
     private void EnsureSplitChild(ref GameObject child, ref Mesh childMesh, string name)
     {
@@ -701,9 +809,23 @@ public class ConeGuide : MonoBehaviour
         ridgeObject = null;
     }
 
+    /// <summary>farAtInfinity が OFF になったときに，遠断面の左目用・右目用の子オブジェクトを解放する</summary>
+    private void ReleaseStereoFarChildren()
+    {
+        SafeDestroy(farLeftMesh);
+        SafeDestroy(farRightMesh);
+        farLeftMesh = null;
+        farRightMesh = null;
+        if (farLeftObject != null) SafeDestroy(farLeftObject);
+        if (farRightObject != null) SafeDestroy(farRightObject);
+        farLeftObject = null;
+        farRightObject = null;
+    }
+
     private void ReleaseResources()
     {
         ReleaseSplitChildren();
+        ReleaseStereoFarChildren();
         SafeDestroy(mesh);
         SafeDestroy(material);
         mesh = null;
