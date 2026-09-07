@@ -31,10 +31,10 @@ TagManager:
   - ConeSelf
   - ConeSelfRef
   - ConeOtherRidge
-  - 
-  - 
-  - 
-  - 
+  - ConeOtherFarLeft
+  - ConeOtherFarRight
+  - ConeSelfFarLeft
+  - ConeSelfFarRight
   - 
   - 
   - 
