@@ -203,6 +203,26 @@ public static class ConeGuideSceneUpgrader
             return;
         }
 
+        // --- 2.6. OVRCameraRig を両眼立体視モードに切り替え，表示先Canvasを有効化する ---
+        // このシーンが以前（本仕様着手前）に構築されたものの場合，usePerEyeCameras は
+        // まだ OFF・LeftCanvas/RightCanvas もまだ無効のままになっている。
+        // ViewpointFollowingSceneBuilder.cs はゼロから構築する専用ツールで既存シーンには
+        // 使わないため，このアップグレーダ側で明示的に切り替える必要がある
+        // （さもないと錐やChannelCompositorを配線してもGame画面に何も表示されない）
+        OVRCameraRig rig = leftEyeCaptureCam.GetComponentInParent<OVRCameraRig>();
+        if (rig != null && !rig.usePerEyeCameras)
+        {
+            Undo.RecordObject(rig, "Enable per-eye cameras");
+            rig.usePerEyeCameras = true;
+            EditorUtility.SetDirty(rig);
+            Debug.Log("[ConeGuideSceneUpgrader] OVRCameraRig.usePerEyeCameras を有効化しました（両眼立体視）");
+        }
+        SetActiveIfFound(scene, "LeftCanvas", true);
+        SetActiveIfFound(scene, "RightCanvas", true);
+        // 単眼時代の CenterCanvas は今後使わないため無効化する（LeftCanvas/RightCanvas との
+        // 二重表示を避けるため。実機で確認済みではないので，問題が出る場合は要調整）
+        SetActiveIfFound(scene, "CenterCanvas", false);
+
         Shader coneShader = AssetDatabase.LoadAssetAtPath<Shader>(ConeLineShaderPath);
 
         // --- 3. 錐を2つ用意する（既にあれば作り直さず配線だけ更新する） ---
@@ -366,6 +386,8 @@ public static class ConeGuideSceneUpgrader
             "右目: " + RightEyeCaptureName + " 系統一式（" + RightLiveBoxCamName + " 等）\n" +
             "収録視点: " + LeftGhostCameraName + " / " + RightGhostCameraName
             + "（GhostEyeOffset がライブ側の実IPDに追従）\n\n" +
+            "OVRCameraRig.usePerEyeCameras を有効化し、LeftCanvas/RightCanvasを表示、\n" +
+            "単眼時代のCenterCanvasを非表示にしました。\n\n" +
             "既存カメラ " + excluded + " 台から錐レイヤを除外しました。\n\n" +
             "【使い方】左目用 ChannelCompositor（" + LeftRawImageName + " 上）のチェックを入れると\n" +
             "両眼の3チャンネル合成経路に切り替わります。右目用は左目用の設定を自動的に追随します\n" +
@@ -899,6 +921,22 @@ public static class ConeGuideSceneUpgrader
     {
         Transform t = FindFirst(scene, new[] { name });
         return t != null ? t.GetComponent<Camera>() : null;
+    }
+
+    /// <summary>
+    /// 指定名の GameObject が見つかれば，その有効/無効を切り替える（見つからなければ何もしない）．
+    /// 非アクティブなオブジェクトも <see cref="FindFirst"/> で探索対象になるため，
+    /// 現在 false のものを true にする（有効化）こともできる．
+    /// </summary>
+    private static void SetActiveIfFound(Scene scene, string name, bool active)
+    {
+        Transform t = FindFirst(scene, new[] { name });
+        if (t == null || t.gameObject.activeSelf == active) return;
+
+        Undo.RecordObject(t.gameObject, "Toggle " + name);
+        t.gameObject.SetActive(active);
+        EditorUtility.SetDirty(t.gameObject);
+        Debug.Log("[ConeGuideSceneUpgrader] " + name + " を" + (active ? "有効化" : "無効化") + "しました");
     }
 
     /// <summary>指定名の Transform を探し，その RawImage コンポーネントを返す（無ければ null）</summary>

@@ -245,3 +245,23 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
    確認した（`BuildReplayScene()`は別経路で「通常カメラ・HMD不要」の構成を組んでおり，
    `SetupPlayerPipeline`を呼ばない）。6.1-4の「再生確認シーンは今回のスコープ外」という
    判断と整合しており，今回の変更で影響を受けない
+
+### 6.4 バグ修正: 既存シーンでは Game 画面に何も表示されない
+
+段階4・5のコミット後，実際に`ViewpointFollowing.unity`へ「Tools > 視点追従実験 >
+錐ガイドを現在のシーンに追加」を実行してもらったところ，**Sceneビューには錐が
+存在するのにGameビューには何も表示されない**という報告があった。
+
+**原因**: `usePerEyeCameras`の有効化と`LeftCanvas`/`RightCanvas`の有効化・
+`CenterCanvas`の無効化（§3.3.1・§6.2）は，段階5で`ViewpointFollowingSceneBuilder.cs`
+（シーンをゼロから構築する専用ツール）にしか実装しておらず，`ConeGuideSceneUpgrader.cs`
+（既存シーンに差分を足す，実際にユーザーが使うツール）には実装していなかった。
+ユーザーの既存シーンは以前（本仕様着手前）に構築されたものなので，
+`usePerEyeCameras`はOFF・`LeftCanvas`/`RightCanvas`も無効のままであり，
+錐やChannelCompositorをいくら正しく配線しても，そもそも表示経路自体が
+単眼時代のまま塞がっていた。
+
+**修正**: `ConeGuideSceneUpgrader.UpgradeCurrentScene()`にも同じ切替処理を追加した
+（`SetActiveIfFound`ヘルパーを新設。`ViewpointFollowingSceneBuilder.cs`の同名
+private関数とは別クラスのため個別実装）。これで新規構築・既存シーン更新の
+どちらの経路でも両眼化の実行時設定が揃うようになった。
