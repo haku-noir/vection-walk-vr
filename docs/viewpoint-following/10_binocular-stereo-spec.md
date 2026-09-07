@@ -201,14 +201,32 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
    を持たないため，`LeftEyeCapture`等の休眠インフラが存在しない。§2.8の決定自体は
    変更しないが，具体的な実装は別途行う必要があると判明した（現状はこのシーンで
    メニューを実行するとエラーダイアログを出して中断する）
-5. **錐ガイドのON/OFF（Kキー等，実験制御）を両目のChannelCompositorへ反映する対応が
-   未実装**。`ChannelCompositor.mirrorFrom`は提示条件（パラメータ）の同期のみを行い，
-   `enabled`（コンポーネント自体の有効/無効）は同期できない（無効化されたコンポーネントは
-   `LateUpdate`が呼ばれず，同期元を「引く」動作自体が起きないため）。現状は
-   `FollowingExperimentManager`/`ReplayPlayer`/`FollowingLogger`とも左目用（マスター）の
-   ChannelCompositorにのみ配線されており，右目側の有効/無効は追随しない。
-   `FollowingExperimentManager.cs`等の側で右目用の参照も持たせ，切替時に両方へ反映する
-   対応が別途必要（次のコミットで対応予定）
+5. **錐ガイドのON/OFF（Kキー等，実験制御）を両目のChannelCompositorへ反映する対応**。
+   `ChannelCompositor.mirrorFrom`は提示条件（パラメータ）の同期のみを行い，`enabled`
+   （コンポーネント自体の有効/無効）は同期できない（無効化されたコンポーネントは
+   `LateUpdate`が呼ばれず，同期元を「引く」動作自体が起きないため）。
+   → **解決済み**（§6.3）。`FollowingExperimentManager.cs`/`ReplayPlayer.cs`に
+   `channelCompositorRight`フィールドを追加し，ON/OFF切替・ResetPhaseを両目に
+   明示的に反映するようにした
+
+### 6.3 実験制御を左右両方のChannelCompositorへ反映する対応（追加コミット）
+
+§6.1-5で判明した課題を解決した。`ChannelCompositor.mirrorFrom`が同期するのは
+モード・極性・周波数等の**パラメータ**だけで，コンポーネント自体の`enabled`は
+（無効化されている間は`LateUpdate`が呼ばれず「引く」動作自体が起きないため）
+同期できない。この`enabled`の切替と，試行開始時の明示的な`ResetPhase()`呼び出しは，
+呼び出し元（`FollowingExperimentManager`/`ReplayPlayer`）が左右両方へ直接反映する
+形にした:
+
+- `FollowingExperimentManager.cs` / `ReplayPlayer.cs`: `channelCompositorRight`
+  フィールドを追加（未設定なら左目用のみ切り替える後方互換）。K キーでのON/OFF
+  切替（`Update()`/`ApplyConeGuide()`）と，試行開始時の`ResetPhase()`
+  （`FollowingExperimentManager.StartTrial()`のみ。`ReplayPlayer`は`OnEnable`で
+  自動リセットされるため不要）を左右両方に反映する
+- `ConeGuideSceneUpgrader.cs`: `WireExperimentControl()`が右目用
+  ChannelCompositorも受け取り，`channelCompositorRight`へ配線するよう変更
+- `FollowingLogger`は状態を読み取るだけ（`enabled`を書き換えない）なので
+  左目用（マスター）のみの配線のままで良い（変更なし）
 
 ### 6.2 段階5（ViewpointFollowingSceneBuilder.cs）実装時に判明した追加事項
 

@@ -348,9 +348,9 @@ public static class ConeGuideSceneUpgrader
         ChannelCompositor rightCompositor = EnsureCompositorForEye("右目", rightChannels,
             coneOther, coneSelf, switcher, leftCompositor);
 
-        // 実験制御・ロガーは左目側（マスター）に配線する。有効/無効の切替を両目に反映する
-        // 仕組みは FollowingExperimentManager 側の対応が別途必要（10 仕様 未実装）
-        WireExperimentControl(scene, leftCompositor);
+        // 実験制御・ロガーへ左目用（マスター）・右目用の両方を配線する。
+        // FollowingExperimentManager/ReplayPlayer が K キー等の ON/OFF 切替を両目へ反映する
+        WireExperimentControl(scene, leftCompositor, rightCompositor);
 
         // --- 8. 既存カメラの Culling Mask から全レイヤを除外する ---
         int excluded = ExcludeConeLayersFromExistingCameras(scene);
@@ -372,9 +372,9 @@ public static class ConeGuideSceneUpgrader
             "（Mirror From で配線済み）。個別に変えたい場合のみ右目用を直接編集してください。\n\n" +
             "【旧・単眼オブジェクトについて】LiveBoxCam 等の単眼時代のオブジェクトが\n" +
             "シーンに残っている場合は、もう使われないため手動で削除してください。\n\n" +
-            "【未対応】再生確認シーン（ViewpointFollowingReplay.unity）はまだ両眼化していません。\n" +
-            "また、実験中の錐ガイド ON/OFF（K キー）を両目の ChannelCompositor に反映する対応は\n" +
-            "FollowingExperimentManager 側で別途必要です（現状は左目側のみ配線）。\n\n" +
+            "実験中の錐ガイド ON/OFF（K キー）は FollowingExperimentManager /\n" +
+            "ReplayPlayer が左目用・右目用の ChannelCompositor 両方に反映します。\n\n" +
+            "【未対応】再生確認シーン（ViewpointFollowingReplay.unity）はまだ両眼化していません。\n\n" +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -795,21 +795,23 @@ public static class ConeGuideSceneUpgrader
     }
 
     /// <summary>
-    /// 実験制御・ロガーへ ChannelCompositor（マスター側＝左目用）を配線する．
+    /// 実験制御・ロガーへ左目用（マスター）・右目用の ChannelCompositor を配線する．
     /// </summary>
     /// <remarks>
-    /// 有効/無効の切替（K キー等）を<b>右目側にも反映する対応は未実装</b>。
-    /// 現状は左目側だけが切り替わり，右目側の enabled は追随しない
-    /// （<see cref="ChannelCompositor.mirrorFrom"/> はパラメータの同期のみで，
-    /// 無効化されたコンポーネントは LateUpdate 自体が呼ばれないため enabled 自体は
-    /// 同期できない）。FollowingExperimentManager 側の対応を別途行うこと（10 仕様，未着手）。
+    /// <see cref="ChannelCompositor.mirrorFrom"/> はパラメータの同期のみを行い，
+    /// コンポーネント自体の有効/無効（enabled）は同期できない（無効化されたコンポーネントは
+    /// LateUpdate 自体が呼ばれないため）．そのため <c>FollowingExperimentManager</c> /
+    /// <c>ReplayPlayer</c> 側に <c>channelCompositorRight</c> フィールドを追加し，
+    /// K キー等での ON/OFF 切替時に両目へ反映するようにした（10 仕様拡張）．
     /// </remarks>
-    private static void WireExperimentControl(Scene scene, ChannelCompositor masterCompositor)
+    private static void WireExperimentControl(Scene scene, ChannelCompositor masterCompositor,
+        ChannelCompositor rightCompositor)
     {
         foreach (ReplayPlayer replay in CollectComponents<ReplayPlayer>(scene))
         {
             Undo.RecordObject(replay, "Wire ChannelCompositor");
             replay.channelCompositor = masterCompositor;
+            replay.channelCompositorRight = rightCompositor;
             EditorUtility.SetDirty(replay);
         }
 
@@ -817,6 +819,7 @@ public static class ConeGuideSceneUpgrader
         {
             Undo.RecordObject(mgr, "Wire ChannelCompositor");
             mgr.channelCompositor = masterCompositor;
+            mgr.channelCompositorRight = rightCompositor;
             EditorUtility.SetDirty(mgr);
         }
 

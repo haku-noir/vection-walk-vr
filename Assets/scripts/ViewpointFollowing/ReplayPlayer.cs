@@ -63,9 +63,19 @@ public class ReplayPlayer : MonoBehaviour
 
     /// <summary>
     /// 四角錐ガイドの2チャンネル合成器（09 仕様）．未設定なら従来どおり ViewSwitcher が表示を担う．
+    /// 両眼立体視化（10 仕様）では<b>左目用（マスター）</b>を指す．
     /// </summary>
-    [Tooltip("錐ガイドの2チャンネル合成器（未設定なら従来の ViewSwitcher 経路）")]
+    [Tooltip("錐ガイドの2チャンネル合成器（未設定なら従来の ViewSwitcher 経路）。両眼立体視の左目用（マスター）")]
     public ChannelCompositor channelCompositor;
+
+    /// <summary>
+    /// 右目用の ChannelCompositor（10 仕様，両眼立体視化拡張）．FollowingExperimentManager
+    /// と同じ理由で，enabled と ResetPhase だけはこのスクリプトが左右両方へ明示的に反映する
+    /// （<see cref="ChannelCompositor.mirrorFrom"/> はパラメータの同期のみで enabled は
+    /// 同期できないため）．未設定（None）なら左目用のみ切り替える．
+    /// </summary>
+    [Tooltip("右目用のChannelCompositor（両眼立体視。ONOFFとResetPhaseを左目用と揃えるために使う）")]
+    public ChannelCompositor channelCompositorRight;
 
     /// <summary>
     /// 錐ガイド（背景＋箱の2チャンネル合成）を使うか．
@@ -320,6 +330,8 @@ public class ReplayPlayer : MonoBehaviour
         // 切り替わった瞬間だけ触る（ChannelCompositor の OnEnable で位相がリセットされる）
         if (channelCompositor.enabled == active) return;
         channelCompositor.enabled = active;
+        // 両眼立体視化（10 仕様）: 右目用も同じフレームで揃える
+        if (channelCompositorRight != null) channelCompositorRight.enabled = active;
 
         // 合成器は OnDisable で「表示を引き取る前の ViewSwitcher の状態」に戻す．
         // それは Reswitch 用の状態なので，止めた直後に今の表示モードへ張り直す

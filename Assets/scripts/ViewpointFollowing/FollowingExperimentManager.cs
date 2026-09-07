@@ -88,9 +88,24 @@ public class FollowingExperimentManager : MonoBehaviour
     public FollowingLogger followingLogger;
     /// <summary>
     /// 四角錐ガイドの2チャンネル合成器（09 仕様）．未設定なら錐ガイド関連の操作は無効．
+    /// 両眼立体視化（10 仕様）では<b>左目用（マスター）</b>を指す．
     /// </summary>
-    [Tooltip("錐ガイドの2チャンネル合成器（未設定なら錐ガイドの操作は無効）")]
+    [Tooltip("錐ガイドの2チャンネル合成器（未設定なら錐ガイドの操作は無効）。両眼立体視の左目用（マスター）")]
     public ChannelCompositor channelCompositor;
+
+    /// <summary>
+    /// 右目用の ChannelCompositor（10 仕様，両眼立体視化拡張）．
+    ///
+    /// 提示条件（モード・極性・周波数等）は<see cref="ChannelCompositor.mirrorFrom"/>により
+    /// 右目側が左目側から毎フレーム自動的に引くため，このスクリプトから個別に書き込む必要はない。
+    /// ただし<b>コンポーネント自体の有効/無効（enabled）だけは mirrorFrom で同期できない</b>
+    /// （無効化されたコンポーネントは LateUpdate 自体が呼ばれず，同期元を「引く」動作が
+    /// 起きないため）。そのため K キー等による ON/OFF 切替と ResetPhase はこのスクリプトが
+    /// 明示的に左右両方へ反映する．未設定（None）なら左目用のみ切り替える（単眼運用や
+    /// 移行期の後方互換のため）．
+    /// </summary>
+    [Tooltip("右目用のChannelCompositor（両眼立体視。ONOFFとResetPhaseを左目用と揃えるために使う）")]
+    public ChannelCompositor channelCompositorRight;
     /// <summary>
     /// 停止中に視野へ色を付ける PostProcessVolume（既存実験と同じポーズ演出）
     /// </summary>
@@ -157,11 +172,17 @@ public class FollowingExperimentManager : MonoBehaviour
         }
 
         // 錐ガイド経路の有効・無効を反映する（Kキー・Inspector のどちらの変更にも追随）．
-        // 収録走では素のライブ映像を見せたいので Follow モードでのみ有効にする
+        // 収録走では素のライブ映像を見せたいので Follow モードでのみ有効にする。
+        // 両眼立体視化（10 仕様）では左目用（マスター）・右目用の両方に反映する必要がある
+        // （ChannelCompositor.mirrorFrom はパラメータの同期のみで enabled は同期できないため）
         if (channelCompositor != null)
         {
             bool wantCone = coneGuideEnabled && mode == Mode.Follow;
             if (channelCompositor.enabled != wantCone) channelCompositor.enabled = wantCone;
+            if (channelCompositorRight != null && channelCompositorRight.enabled != wantCone)
+            {
+                channelCompositorRight.enabled = wantCone;
+            }
         }
 
         // --- 開始・停止のトグル（Oキー / Bボタン: 保存なしの開始） ---
@@ -382,10 +403,16 @@ public class FollowingExperimentManager : MonoBehaviour
             player.StartPlayback();
             switcher.mode = ViewSwitcher.SourceMode.Alternate;
             switcher.ResetPhase(); // 必ずライブ映像から提示を始める
-            // 錐ガイド経路のときは2チャンネルの位相と箱の姿勢フィルタも揃えてリセットする
+            // 錐ガイド経路のときは2チャンネルの位相と箱の姿勢フィルタも揃えてリセットする。
+            // 左右両方を同じフレームでリセットすることで，2つの ChannelPhase の位相が
+            // 自然にロックステップし続ける（ChannelCompositor.cs の SyncFromMirrorSource 参照）
             if (channelCompositor != null && channelCompositor.enabled)
             {
                 channelCompositor.ResetPhase();
+            }
+            if (channelCompositorRight != null && channelCompositorRight.enabled)
+            {
+                channelCompositorRight.ResetPhase();
             }
             followingLogger.StartLogging();
         }
