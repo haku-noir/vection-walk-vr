@@ -168,4 +168,12 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 
 ## 6. 実装状況
 
-未着手。本書は実装前の仕様検討段階のドキュメントである。§2の決定事項に沿って、`ConeGuideLayers.cs`（Far At Infinity用レイヤ追加）→ `ConeGuide.cs`（遠断面のfarLeft/farRight分岐）→ `ConeGuideSceneUpgrader.cs`（左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線）→ `ViewpointFollowingSceneBuilder.cs`（`usePerEyeCameras`解除・Canvas有効化）の順で進める想定。
+§2の決定事項に沿って、`ConeGuideLayers.cs`（Far At Infinity用レイヤ追加）→ `ConeGuide.cs`（遠断面のfarLeft/farRight分岐）→ `ChannelCompositor.cs`（`mirrorFrom`拡張）→ `ConeGuideSceneUpgrader.cs`（左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線）→ `ViewpointFollowingSceneBuilder.cs`（`usePerEyeCameras`解除・Canvas有効化）の順で進めている。
+
+| 段階 | 内容 | 状況 |
+|---|---|---|
+| 1 | `ConeGuideLayers.cs`: Far At Infinity用の左目/右目別レイヤ（ConeOtherFarLeft/Right）を追加 | 完了 |
+| 2 | `ConeGuide.cs`: 遠断面のFar At Infinityを左目/右目別メッシュに分岐（ConeSelfFarLeft/Right含む） | 完了 |
+| 3 | `ChannelCompositor.cs`: `mirrorFrom`パターンで提示条件を左右共有 | 完了 |
+| 4 | `ConeGuideSceneUpgrader.cs`: 左右カメラ・RT・DelayedFrameBuffer・ChannelCompositorの配線 | 未着手 |
+| 5 | `ViewpointFollowingSceneBuilder.cs`: `usePerEyeCameras`解除・Canvas有効化 | 未着手 |

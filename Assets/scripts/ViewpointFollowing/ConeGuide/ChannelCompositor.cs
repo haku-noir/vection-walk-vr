@@ -46,6 +46,14 @@ using UnityEngine.UI;
 /// <see cref="guideRidgeDelayFrames"/>）．<see cref="guideDelayLocked"/> を ON にすると
 /// 3部位すべてを <see cref="guideDelayFrames"/> の1つの値に固定できる（既定は ON）．
 /// この合成器が各 <see cref="DelayedFrameBuffer.delayFrames"/> の唯一の書き込み元になる．
+///
+/// 両眼立体視化（10 §2.7 拡張）に伴い，<see cref="mirrorFrom"/> を設定すると，
+/// 提示条件（モード・極性・周波数・輝度変調量・Enabledフラグ・遅延フレーム数）を
+/// 同期元から毎フレーム<b>引く</b>（<see cref="ConeGuide.mirrorFrom"/> と同じパターン）．
+/// 左目用・右目用の2インスタンスのうち片方をマスターとし，もう片方が
+/// <see cref="mirrorFrom"/> でマスターを参照することで，両目の4ストローク・ワブルの
+/// 位相が噛み合わなくなることを防ぐ．入力テクスチャ・カメラ・出力先など目ごとに
+/// 固有の参照は同期しない．
 /// </summary>
 /// <remarks>
 /// - <b>既存の ViewSwitcher の単一テクスチャ経路は変更していない</b>．この合成器が有効な間だけ
@@ -331,6 +339,20 @@ public class ChannelCompositor : MonoBehaviour
     [Tooltip("ガイドチャンネルの輝度変調量 Δ（0-1輝度、既定0.35）")]
     [Range(0f, 1f)] public float guideDelta = 0.35f;
 
+    [Header("両眼共有（10 仕様 §2.7 拡張）")]
+    /// <summary>
+    /// 提示条件（モード・極性・周波数・輝度変調量・Enabledフラグ・遅延フレーム数）を
+    /// <b>この ChannelCompositor からコピーする</b>（同期元）．None なら同期しない．
+    ///
+    /// 両眼立体視化に伴い，左目用・右目用の2つの ChannelCompositor は同じ提示条件で
+    /// なければならない（片目だけ4ストロークの位相がずれると条件が破綻する）．
+    /// <see cref="ConeGuide.mirrorFrom"/> と同じ「引く」パターンで，2つのコンポーネントの
+    /// 更新順に依存せず同じフレームで値が揃う．入力テクスチャ・カメラ・出力先RawImage・
+    /// ViewSwitcher参照など目ごとに固有の参照はコピーしない．
+    /// </summary>
+    [Tooltip("提示条件の同期元（None なら同期しない）。左右の ChannelCompositor は同じ提示条件である必要がある")]
+    public ChannelCompositor mirrorFrom;
+
     [Header("シェーダ（未設定なら自動検索）")]
     /// <summary>合成シェーダ（Hidden/ChannelComposite）</summary>
     [Tooltip("合成シェーダ（Hidden/ChannelComposite。未設定なら自動検索）")]
@@ -391,6 +413,9 @@ public class ChannelCompositor : MonoBehaviour
     private bool dualColorWarned;      // 警告ログを1回だけ出すためのフラグ
     private bool dualColorAutoDisabled; // HUD に「自動無効化した」旨を出すためのフラグ
 
+    /// <summary>mirrorFrom の相互参照警告を1回だけ出すためのフラグ（10 §2.7 拡張）</summary>
+    private bool mirrorCycleWarned;
+
     /// <summary>
     /// 箱の4ストロークと排他だったため別色モードを自動無効化したか（HUD 表示用）
     /// </summary>
@@ -442,10 +467,66 @@ public class ChannelCompositor : MonoBehaviour
         if (coneSelf != null) coneSelf.ResetPose();
     }
 
+    /// <summary>
+    /// 同期元の ChannelCompositor から提示条件（モード・極性・周波数・輝度変調量・
+    /// Enabledフラグ・遅延フレーム数）をコピーする（10 §2.7 拡張）．
+    ///
+    /// 各 <see cref="ChannelPhase"/>（<see cref="bgPhase"/> 等）の内部状態（位相の現在値）は
+    /// 同期しないが，周波数・極性・波形が揃っていれば両インスタンスとも同じ
+    /// <see cref="Time.deltaTime"/> で同時に進むため，自然に位相が揃う
+    /// （両インスタンスが同じフレームで有効化・<see cref="ResetPhase"/> されている前提）．
+    /// </summary>
+    private void SyncFromMirrorSource()
+    {
+        ChannelCompositor source = mirrorFrom;
+        if (source == null || source == this) return;
+
+        // 相互参照は互いに上書きし合って発散するので同期しない
+        if (source.mirrorFrom == this)
+        {
+            if (!mirrorCycleWarned)
+            {
+                Debug.LogWarning("[ChannelCompositor] " + name + " と " + source.name
+                    + " が互いを同期元にしています。どちらか一方の Mirror From を None にしてください。", this);
+                mirrorCycleWarned = true;
+            }
+            return;
+        }
+        mirrorCycleWarned = false;
+
+        bgMode = source.bgMode;
+        bgPolarity = source.bgPolarity;
+        bgGrayscale = source.bgGrayscale;
+        bgFrequencyFallback = source.bgFrequencyFallback;
+
+        boxMode = source.boxMode;
+        boxPolarity = source.boxPolarity;
+        syncBoxFreqToBg = source.syncBoxFreqToBg;
+        boxFrequency = source.boxFrequency;
+        boxDelta = source.boxDelta;
+
+        guideMode = source.guideMode;
+        guideNearEnabled = source.guideNearEnabled;
+        guideFarEnabled = source.guideFarEnabled;
+        guideRidgeEnabled = source.guideRidgeEnabled;
+        guideDelayLocked = source.guideDelayLocked;
+        guideDelayFrames = source.guideDelayFrames;
+        guideNearDelayFrames = source.guideNearDelayFrames;
+        guideFarDelayFrames = source.guideFarDelayFrames;
+        guideRidgeDelayFrames = source.guideRidgeDelayFrames;
+        guidePolarity = source.guidePolarity;
+        syncGuideFreqToBg = source.syncGuideFreqToBg;
+        guideFrequency = source.guideFrequency;
+        guideDelta = source.guideDelta;
+    }
+
     private void LateUpdate()
     {
         if (bgLiveTexture == null || bgGhostTexture == null) return;
         if (!EnsureResources()) return;
+
+        // 同期元があれば先に提示条件を引く（10 §2.7 拡張。左右の ChannelCompositor を揃える）
+        SyncFromMirrorSource();
 
         // 表示の担当を確実にこちらへ寄せる（ReplayPlayer など他所が ViewSwitcher を
         // 有効化し直しても，この合成器が有効な間は合成結果を出す）
