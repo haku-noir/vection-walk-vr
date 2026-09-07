@@ -265,3 +265,28 @@ Unity/OVRのSingle Pass Instanced等ネイティブなステレオパイプラ�
 （`SetActiveIfFound`ヘルパーを新設。`ViewpointFollowingSceneBuilder.cs`の同名
 private関数とは別クラスのため個別実装）。これで新規構築・既存シーン更新の
 どちらの経路でも両眼化の実行時設定が揃うようになった。
+
+### 6.5 UX改善: 錐ガイドの提示条件設定をExperimentRigに集約
+
+錐ガイドの提示条件（背景/箱/ガイドの各モード・極性・周波数・遅延量など）の実体は
+`ChannelCompositor`（左目用＝マスター）にあり，物理的には`LeftRawImage`という，
+実験操作の主眼である`ExperimentRig`とは離れた場所に存在する。ユーザーから
+「設定する箇所が散らばっているのは良くない。ExperimentRigに集約してほしい」との
+指摘を受けた。
+
+**対応方針**: フィールドを複製してPush/Pull同期する方式ではなく，
+**`FollowingExperimentManager`のカスタムInspectorで`ChannelCompositor`（マスター）の
+Inspectorをそのまま埋め込んで表示する**方式を採った。データの複製が一切発生しない
+（`ExperimentRig`のInspector上に表示されているのは`LeftRawImage`上の
+ChannelCompositor本体そのもの）ため，同期漏れ・タイミングずれのリスクがなく，
+右目側への反映は既存の`mirrorFrom`（Play中，毎フレーム）がそのまま働く。
+
+- `Editor/FollowingExperimentManagerEditor.cs`（新規）: `[CustomEditor(typeof(FollowingExperimentManager))]`。
+  通常のInspectorを描画した後，`manager.channelCompositor`を`CreateEditor()`で
+  埋め込みEditor化し，`OnInspectorGUI()`をそのまま呼び出す。「LeftRawImage を選択」
+  ボタンも用意し，必要なら本体へ直接ジャンプできるようにした
+
+これにより`ExperimentRig`のInspectorだけで，モード切替キー（K/G/C/B等）で
+操作する項目も含めて，錐ガイドに関する設定のほぼすべてを完結して編集できる。
+`ReplayPlayer`（再生確認シーン用）にも同じ手法を適用できるが，再生確認シーンは
+§6.1-4のとおり両眼化のスコープ外のため未対応（必要になれば同じパターンで追加できる）。
