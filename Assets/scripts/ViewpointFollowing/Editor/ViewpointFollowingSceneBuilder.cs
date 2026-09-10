@@ -14,6 +14,12 @@ using UnityEngine.UI;
 /// - ExperimentRig（実験管理・収録・再生・切替・記録の各スクリプト，参照配線済み）
 /// - 歩行コース環境（高密度/低密度の切替可能なオブジェクト群，床，開始/終了マーカー）
 /// - PostProcessVolume（停止中の視野マスク用）
+///
+/// <b>視点追従実験（<see cref="BuildScene"/>）は両眼立体視で構築する</b>（10 仕様）。
+/// 生成後は「Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加」
+/// （<see cref="ConeGuideSceneUpgrader"/>）を実行して，四角錐ガイドと左右の
+/// ChannelCompositor 一式を配線すること。4ストローク歩行シーン
+/// （<see cref="BuildFourStrokeScene"/>）は本仕様のスコープ外のため単眼のまま。
 /// </summary>
 public static class ViewpointFollowingSceneBuilder
 {
@@ -71,10 +77,12 @@ public static class ViewpointFollowingSceneBuilder
         }
 
         // --- 4. Player プレハブを配置し，不要な機能を無効化 ---
+        // 視点追従実験は両眼立体視化する（10 仕様）
         Transform centerEyeAnchor;
         Camera captureCam;
         RawImage centerRawImage;
-        GameObject player = SetupPlayerPipeline(out centerEyeAnchor, out captureCam, out centerRawImage);
+        GameObject player = SetupPlayerPipeline(stereo: true,
+            out centerEyeAnchor, out captureCam, out centerRawImage);
         if (player == null) return;
 
         // --- 5. GhostCamera（収録映像の再レンダリング用カメラ）を作成 ---
@@ -151,6 +159,10 @@ public static class ViewpointFollowingSceneBuilder
     /// <summary>
     /// 再生確認シーン（ViewpointFollowingReplay.unity）を自動構築する．
     /// 実験シーンと同じ環境の中で，保存済み CSV の視点を通常カメラで再生する（HMD不要）．
+    ///
+    /// ライブ姿勢と収録姿勢を2台のカメラで同時に再レンダリングし，実験シーンと同じ
+    /// ViewSwitcher / FourStrokeCompositor で再合成するため，収録後に切替周波数の変更や
+    /// 4ストロークの追加ができる（表示モード Reswitch）．
     /// </summary>
     [MenuItem("Tools/視点追従実験/再生確認シーンを生成")]
     public static void BuildReplayScene()
@@ -159,38 +171,89 @@ public static class ViewpointFollowingSceneBuilder
 
         materialCache.Clear();
 
-        // --- 1. 新規シーン（Main Camera + Directional Light 付き）を作成 ---
+        // --- 1. 新規シーン（Directional Light 付き）を作成 ---
         var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+        GameObject mainCam = GameObject.Find("Main Camera");
+        if (mainCam != null) Object.DestroyImmediate(mainCam); // 専用カメラを作り直すため既定は削除
 
-        // Main Camera を再生用カメラとして流用する
-        GameObject camGO = GameObject.Find("Main Camera");
-        if (camGO == null)
+        // --- 2. 映像テクスチャ（ライブ=CenterEye / 収録=PlaybackEye）を用意 ---
+        RenderTexture liveRT = AssetDatabase.LoadAssetAtPath<RenderTexture>(LiveRTPath);
+        RenderTexture playbackRT = AssetDatabase.LoadAssetAtPath<RenderTexture>(PlaybackRTPath);
+        if (playbackRT == null && liveRT != null)
         {
-            camGO = new GameObject("ReplayCamera");
-            camGO.AddComponent<Camera>();
-            camGO.AddComponent<AudioListener>();
+            if (AssetDatabase.CopyAsset(LiveRTPath, PlaybackRTPath))
+                playbackRT = AssetDatabase.LoadAssetAtPath<RenderTexture>(PlaybackRTPath);
         }
-        camGO.name = "ReplayCamera";
-        Camera replayCam = camGO.GetComponent<Camera>();
-        replayCam.fieldOfView = 90f;                          // 実験時の撮影カメラに合わせる
-        replayCam.nearClipPlane = 0.1f;
-        replayCam.stereoTargetEye = StereoTargetEyeMask.None; // HMD には出力しない（Gameビュー専用）
+        if (liveRT == null || playbackRT == null)
+        {
+            EditorUtility.DisplayDialog("エラー",
+                "映像テクスチャが用意できませんでした:\n" + LiveRTPath + "\n" + PlaybackRTPath, "OK");
+            return;
+        }
 
-        // --- 2. 実験シーンと同じ床・環境・マーカーを構築 ---
+        // --- 3. 実験シーンと同じ床・環境・マーカーを構築 ---
         BuildFloorAndMarkers();
         GameObject envRich, envSparse;
         BuildEnvironment(out envRich, out envSparse);
 
-        // --- 3. ReplayRig（再生管理オブジェクト）を作成し配線 ---
+        // --- 4. 再生用カメラ2台（ライブ姿勢用 / 収録姿勢用）を作成 ---
+        // それぞれ RenderTexture へ描画し，画面には出さない（合成結果を RawImage で表示する）
+        Camera liveCam = CreateReplayCamera("LiveReplayCamera", liveRT);
+        liveCam.gameObject.AddComponent<AudioListener>();
+        Camera ghostCam = CreateReplayCamera("GhostReplayCamera", playbackRT);
+
+        // 画面クリア専用カメラ（Overlay Canvas の背後を黒で塗る．シーンは描画しない）
+        GameObject screenGO = new GameObject("ScreenCamera", typeof(Camera));
+        Camera screenCam = screenGO.GetComponent<Camera>();
+        screenCam.clearFlags = CameraClearFlags.SolidColor;
+        screenCam.backgroundColor = Color.black;
+        screenCam.cullingMask = 0;                              // 何も描かない
+        screenCam.depth = -1;
+        screenCam.stereoTargetEye = StereoTargetEyeMask.None;
+
+        // --- 5. 表示用 Canvas + RawImage（全画面）を作成 ---
+        GameObject canvasGO = new GameObject("ReplayCanvas", typeof(Canvas), typeof(CanvasScaler), typeof(GraphicRaycaster));
+        var canvas = canvasGO.GetComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        GameObject rawGO = new GameObject("ReplayRawImage", typeof(RawImage));
+        rawGO.transform.SetParent(canvasGO.transform, false);
+        var rawImage = rawGO.GetComponent<RawImage>();
+        RectTransform rrt = rawImage.rectTransform;
+        rrt.anchorMin = Vector2.zero;
+        rrt.anchorMax = Vector2.one;
+        rrt.offsetMin = Vector2.zero;
+        rrt.offsetMax = Vector2.zero;
+        rawImage.texture = liveRT;
+
+        // --- 6. ReplayRig（再生管理オブジェクト）を作成し配線 ---
         GameObject rigGO = new GameObject("ReplayRig");
         var replay = rigGO.AddComponent<ReplayPlayer>();
+        var switcher = rigGO.AddComponent<ViewSwitcher>();
+        var fourStroke = rigGO.AddComponent<FourStrokeCompositor>();
         var envSwitcher = rigGO.AddComponent<EnvironmentSwitcher>();
 
-        replay.replayCamera = replayCam;
+        // ViewSwitcher（実験シーンと同じ合成・切替ロジックを流用）
+        switcher.rawImage = rawImage;
+        switcher.liveTexture = liveRT;
+        switcher.playbackTexture = playbackRT;
+        switcher.fourStroke = fourStroke;
+        switcher.mode = ViewSwitcher.SourceMode.LiveOnly;
+        switcher.debugTint = false;        // バナーで表示ソースを示すため着色はしない
+        switcher.enabled = false;          // 既定 AsExperienced では ReplayPlayer が表示を担う
+
+        fourStroke.shader = AssetDatabase.LoadAssetAtPath<Shader>(FourStrokeShaderPath);
+
+        replay.liveCamera = liveCam;
+        replay.ghostCamera = ghostCam;
+        replay.viewSwitcher = switcher;
+        replay.rawImage = rawImage;
+        replay.liveTexture = liveRT;
+        replay.playbackTexture = playbackRT;
+
         envSwitcher.envRich = envRich;
         envSwitcher.envSparse = envSparse;
 
-        // --- 4. シーンを保存 ---
+        // --- 7. シーンを保存 ---
         EditorSceneManager.SaveScene(scene, ReplayScenePath);
         AssetDatabase.SaveAssets();
 
@@ -199,12 +262,27 @@ public static class ViewpointFollowingSceneBuilder
             "保存先: " + ReplayScenePath + "\n\n" +
             "再生するだけで最新のCSV（trajectory/following_results）が自動で読み込まれます。\n" +
             "ファイル指定は ReplayRig > ReplayPlayer > File Name。\n\n" +
-            "表示モード（following時）:\n" +
+            "表示モード（following時、Mキーで巡回）:\n" +
             "- AsExperienced: 実験時と同じ時分割切替を再現\n" +
-            "- LiveOnly: 被験者が移動した頭部視点のみ\n" +
-            "- PlayedOnly: 提示された収録映像側のみ\n\n" +
-            "操作: Space=再生/停止, R=最初から, ←/→=±5秒, 1/2/3=環境密度",
+            "- LiveOnly / PlayedOnly: ライブ / 収録映像側のみ\n" +
+            "- Reswitch: 収録後に切替周波数を変更・4ストロークを追加\n\n" +
+            "操作: Space=再生/停止, R=最初から, ←/→=±5秒,\n" +
+            "M=表示モード, ↑↓=周波数, 4=4ストローク, V=極性, 1/2/3=環境密度",
             "OK");
+    }
+
+    /// <summary>
+    /// 再生用カメラを作成する（指定 RenderTexture へ描画し，画面には直接出さない）
+    /// </summary>
+    private static Camera CreateReplayCamera(string name, RenderTexture target)
+    {
+        GameObject go = new GameObject(name, typeof(Camera));
+        Camera cam = go.GetComponent<Camera>();
+        cam.fieldOfView = 90f;                          // 実験時の撮影カメラに合わせる
+        cam.nearClipPlane = 0.1f;
+        cam.targetTexture = target;                     // RT へ描画（合成結果を RawImage で表示）
+        cam.stereoTargetEye = StereoTargetEyeMask.None; // HMD には出力しない
+        return cam;
     }
 
     /// <summary>
@@ -232,10 +310,12 @@ public static class ViewpointFollowingSceneBuilder
         BuildEnvironment(out envRich, out envSparse);
 
         // --- 3. Player プレハブを配置（収録映像用の GhostCamera/PlaybackEye は不要） ---
+        // 4ストローク歩行シーンは本仕様のスコープ外のため単眼のまま（10 仕様は視点追従実験のみ対象）
         Transform centerEyeAnchor;
         Camera captureCam;
         RawImage centerRawImage;
-        GameObject player = SetupPlayerPipeline(out centerEyeAnchor, out captureCam, out centerRawImage);
+        GameObject player = SetupPlayerPipeline(stereo: false,
+            out centerEyeAnchor, out captureCam, out centerRawImage);
         if (player == null) return;
 
         // --- 4. PostProcessVolume（停止中の視野マスク）を配置 ---
@@ -297,8 +377,14 @@ public static class ViewpointFollowingSceneBuilder
     /// 映像パイプラインの構成要素（頭部アンカー・撮影カメラ・視野RawImage）を取り出す．
     /// 実験シーンと4ストローク歩行シーンで共用する．
     /// </summary>
+    /// <param name="stereo">
+    /// true にすると両眼立体視（10 仕様）用に <c>usePerEyeCameras</c> を有効化し，
+    /// LeftCanvas/RightCanvas を有効化・CenterCanvas を無効化する。false（既定の単眼）は
+    /// 従来どおり中央系のみを使う。4ストローク歩行シーンは本仕様のスコープ外のため
+    /// 常に false を渡す
+    /// </param>
     /// <returns>配置した Player（失敗時はダイアログを表示して null）</returns>
-    private static GameObject SetupPlayerPipeline(
+    private static GameObject SetupPlayerPipeline(bool stereo,
         out Transform centerEyeAnchor, out Camera captureCam, out RawImage centerRawImage)
     {
         centerEyeAnchor = null;
@@ -324,12 +410,27 @@ public static class ViewpointFollowingSceneBuilder
         }
         foreach (var charCtrl in player.GetComponentsInChildren<CharacterController>(true)) charCtrl.enabled = false;
 
-        // 両眼視差は既存実験と同様に非対応（中央系のみ使用）
+        // 両眼立体視化（10 仕様，視点追従実験のみ対象）: 中央系ではなく左目/右目の実カメラで
+        // 個別にレンダリングする。単眼だった当初は「両眼視差は既存実験と同様に非対応」として
+        // いたが，10 仕様の検討で両眼視差を使わない設計であることが前後多義性の原因の一つと
+        // 判明し，視点追従実験については方針を転換した（4ストローク歩行シーンは対象外）
         var rig = player.GetComponentInChildren<OVRCameraRig>(true);
-        if (rig != null) rig.usePerEyeCameras = false;
-        // 左右眼用の Canvas は SetReversion を無効化した代わりに明示的に消しておく
-        SetActiveIfFound(player.transform, "LeftCanvas", false);
-        SetActiveIfFound(player.transform, "RightCanvas", false);
+        if (rig != null) rig.usePerEyeCameras = stereo;
+        if (stereo)
+        {
+            // 左右眼用の Canvas を有効化する（ConeGuideSceneUpgrader が実際の合成結果を配線する）
+            SetActiveIfFound(player.transform, "LeftCanvas", true);
+            SetActiveIfFound(player.transform, "RightCanvas", true);
+            // 単眼時代の CenterCanvas は今後使わないため無効化する（LeftCanvas/RightCanvas との
+            // 二重表示を避けるため。実機で確認済みではないので，問題が出る場合は要調整）
+            SetActiveIfFound(player.transform, "CenterCanvas", false);
+        }
+        else
+        {
+            // 従来どおり中央系のみを使う（左右眼用の Canvas は明示的に消しておく）
+            SetActiveIfFound(player.transform, "LeftCanvas", false);
+            SetActiveIfFound(player.transform, "RightCanvas", false);
+        }
 
         // 映像パイプラインの構成要素を取得
         centerEyeAnchor = FindDeep(player.transform, "CenterEyeAnchor");

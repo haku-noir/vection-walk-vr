@@ -22,19 +22,19 @@ TagManager:
   - Barrier
   - left
   - right
-  - 
+  - ConeOtherFar
   - Laser
   - Controller
   - 
   - PostProcessing
-  - 
-  - 
-  - 
-  - 
-  - 
-  - 
-  - 
-  - 
+  - ConeOther
+  - ConeSelf
+  - ConeSelfRef
+  - ConeOtherRidge
+  - ConeOtherFarLeft
+  - ConeOtherFarRight
+  - ConeSelfFarLeft
+  - ConeSelfFarRight
   - 
   - 
   - 
