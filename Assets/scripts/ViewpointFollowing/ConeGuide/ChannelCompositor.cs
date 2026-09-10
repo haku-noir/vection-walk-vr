@@ -136,6 +136,31 @@ public class ChannelCompositor : MonoBehaviour
     public RawImage rawImage;
 
     /// <summary>
+    /// Game画面確認用のミラー出力先（任意．未設定なら何もしない）．
+    ///
+    /// 両眼立体視化（10 仕様）以降，合成結果の本来の表示先である
+    /// <see cref="rawImage"/> は <c>LeftRawImage</c>/<c>RightRawImage</c> であり，
+    /// これらは <c>LeftCanvas</c>/<c>RightCanvas</c>（Screen Space - Camera，描画カメラは
+    /// <c>LeftEyeAnchor</c>/<c>RightEyeAnchor</c>）に載る．これらのカメラは
+    /// <c>stereoTargetEye = Left/Right</c> でXR/HMD経路へ流れるため，
+    /// <b>デスクトップのGame画面には出てこない</b>．
+    ///
+    /// 一方，再生確認シーン（ViewpointFollowingReplay.unity）は「HMD不要でGameビューで
+    /// 確認できる」ことが存在意義で，そのGame画面は <c>ReplayRawImage</c>
+    /// （ReplayCanvas，Screen Space - Overlay）が担っていた．しかし
+    /// <see cref="OnEnable"/> が表示を引き取る際に <see cref="viewSwitcher"/> を
+    /// 無効化するため，両眼化後は <c>ReplayRawImage</c> を更新するものが誰もいなくなり，
+    /// 錐ガイドONの瞬間にGame画面が更新の止まった古いテクスチャのままになっていた．
+    ///
+    /// このフィールドに <c>ReplayRawImage</c> を指定すると，<see cref="rawImage"/> と
+    /// 同じ合成結果をそこにも渡す（左目用コンポジタにだけ設定する運用）．
+    /// HMDでは両眼立体視，Game画面では左目の映像をモニタ，という状態になる．
+    /// 実験シーンでは未設定のままでよい．
+    /// </summary>
+    [Tooltip("Game画面確認用のミラー出力先（任意。再生確認シーンのReplayRawImage を左目用にだけ設定する）")]
+    public RawImage monitorRawImage;
+
+    /// <summary>
     /// 背景の切替周波数 f_bg の取得元．この合成器が有効な間は ViewSwitcher を無効化して
     /// 表示を引き取る（従来の単一テクスチャ経路は壊さない）．
     /// </summary>
@@ -232,9 +257,18 @@ public class ChannelCompositor : MonoBehaviour
     [Range(0.1f, 10f)] public float bgFrequencyFallback = 1f;
 
     [Header("箱チャンネル")]
-    /// <summary>箱の提示条件</summary>
-    [Tooltip("箱の提示条件")]
-    public BoxMode boxMode = BoxMode.Off;
+    /// <summary>
+    /// 箱の提示条件．
+    ///
+    /// 既定値は <see cref="BoxMode.OtherFixed"/>（相手基準の錐を常時表示）．
+    /// ベースライン条件である <see cref="BoxMode.Off"/> を既定にしていたころは，
+    /// ConeGuideSceneUpgrader で新規作成した ChannelCompositor が箱を一切描画せず
+    /// 「配線は正しいのに Game 画面に錐が出ない」と誤解される原因になっていたため，
+    /// 配線直後にそのまま錐が見える値を既定にしている．
+    /// ベースライン条件で実験する場合は Inspector で Off に戻すこと．
+    /// </summary>
+    [Tooltip("箱の提示条件（既定は OtherFixed＝錐が見える状態。ベースラインは Off）")]
+    public BoxMode boxMode = BoxMode.OtherFixed;
 
     /// <summary>箱の4ストローク極性（boxMode = FourStroke のときのみ有効）</summary>
     [Tooltip("箱の4ストローク極性")]
@@ -685,6 +719,14 @@ public class ChannelCompositor : MonoBehaviour
         {
             rawImage.texture = OutputTexture;
             rawImage.color = Color.white; // 合成結果に着色しない
+        }
+
+        // Game画面確認用のミラー出力（再生確認シーンの ReplayRawImage 等）．
+        // 同じ OutputTexture を参照させるだけなので追加の描画コストは無い
+        if (monitorRawImage != null)
+        {
+            monitorRawImage.texture = OutputTexture;
+            monitorRawImage.color = Color.white;
         }
     }
 

@@ -101,6 +101,9 @@ public static class ConeGuideSceneUpgrader
     private const string LeftLiveReplayCamName = "LeftLiveReplayCam";
     private const string RightLiveReplayCamName = "RightLiveReplayCam";
 
+    // 再生確認シーンのGame画面表示用RawImage（HMD不要の確認経路。実験シーンには存在しない）
+    private const string ReplayRawImageName = "ReplayRawImage";
+
     // 箱・ガイド用カメラの名前（Left/Right 前置，10 §2.9 命名規則）
     private const string LeftLiveBoxCamName = "LeftLiveBoxCam";
     private const string RightLiveBoxCamName = "RightLiveBoxCam";
@@ -134,6 +137,11 @@ public static class ConeGuideSceneUpgrader
     {
         public GameObject host;
         public RawImage rawImage;
+        /// <summary>
+        /// Game画面確認用のミラー出力先（任意．再生確認シーンの ReplayRawImage）．
+        /// 左目用にだけ設定する（右目用は null のまま）．
+        /// </summary>
+        public RawImage monitorRawImage;
         public Texture bgLive;
         public Texture bgGhost;
         public RenderTexture boxOtherRT;
@@ -389,10 +397,25 @@ public static class ConeGuideSceneUpgrader
                 + "（ChannelCompositor.bgFrequencyFallback が使われます）");
         }
 
+        // 再生確認シーンのGame画面（ReplayCanvas / ReplayRawImage，Screen Space - Overlay）は
+        // 両眼化後は誰も更新しなくなる（合成結果は LeftRawImage/RightRawImage へ行き，
+        // それらを載せる LeftCanvas/RightCanvas は stereoTargetEye 付きのカメラで描かれるため
+        // デスクトップのGame画面に出てこない。加えて ChannelCompositor.OnEnable が
+        // 従来 ReplayRawImage を描いていた ViewSwitcher を無効化する）。
+        // 「HMD不要でGameビューで確認できる」という再生確認シーンの存在意義を保つため，
+        // 左目用の合成結果をここへミラーする（実験シーンには ReplayRawImage が無いので null）
+        RawImage monitorRawImage = FindRawImage(scene, ReplayRawImageName);
+        if (monitorRawImage != null)
+        {
+            Debug.Log("[ConeGuideSceneUpgrader] " + ReplayRawImageName
+                + " へ左目用の合成結果をミラーします（Game画面確認用）");
+        }
+
         var leftChannels = new EyeChannels
         {
             host = leftRawImage.gameObject,
             rawImage = leftRawImage,
+            monitorRawImage = monitorRawImage,
             bgLive = leftLiveBgTexture,
             bgGhost = leftPlaybackRT,
             boxOtherRT = leftBoxOtherRT,
@@ -463,6 +486,10 @@ public static class ConeGuideSceneUpgrader
             "ViewpointFollowingReplay.unity（再生確認シーン）の両方に対応しています。\n" +
             "再生確認シーンでは OVRCameraRig を含む Player.prefab を自動追加し、\n" +
             "LiveReplayCamera から左目用・右目用の子カメラを新設します。\n\n" +
+            (monitorRawImage != null
+                ? "【Game画面】" + ReplayRawImageName + " へ左目用の合成結果をミラーします。\n" +
+                  "HMDでは両眼立体視、Game画面では左目の映像を確認できます。\n\n"
+                : "") +
             "※シーンは自動保存していません。内容を確認して手動で保存してください。",
             "OK");
     }
@@ -847,6 +874,7 @@ public static class ConeGuideSceneUpgrader
         Undo.RecordObject(compositor, "Configure ChannelCompositor (" + eyeLabel + ")");
         compositor.viewSwitcher = viewSwitcher;
         compositor.rawImage = ch.rawImage;
+        compositor.monitorRawImage = ch.monitorRawImage;
         compositor.bgLiveTexture = ch.bgLive;
         compositor.bgGhostTexture = ch.bgGhost;
         compositor.boxOtherTexture = ch.boxOtherRT;

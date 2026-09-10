@@ -336,3 +336,39 @@ ChannelCompositor本体そのもの）ため，同期漏れ・タイミングず
 同一のメニュー操作（Tools > 視点追従実験 > 錐ガイドを現在のシーンに追加）で両眼化
 できるようになった。完了ダイアログ・プレビュー切替メニュー（`TogglePreview`）の
 検索対象カメラ一覧も両シーンに対応する内容へ更新した。
+
+### 6.7 バグ修正: 再生確認シーンのGame画面で錐ガイドが表示されない
+
+§6.6の配線後，実機確認で「`LeftRawImage`/`RightRawImage`には視差付きで錐ガイドが
+出ているのに，Game画面には何も出ない」という報告があった。§6.6の汎用化で
+**HMDへの出力経路だけを配線し，Game画面への表示経路を再接続していなかった**ため。
+
+**原因**: 再生確認シーンには表示経路が2系統ある。
+
+| 経路 | 表示先 | 両眼化後の状態 |
+|---|---|---|
+| `ViewSwitcher` → `ReplayRawImage` → `ReplayCanvas`（Screen Space - Overlay） | Game画面 | **更新が止まる** |
+| `ChannelCompositor`×2 → `LeftRawImage`/`RightRawImage` → `LeftCanvas`/`RightCanvas`（Screen Space - Camera） | HMD | 正常 |
+
+`ChannelCompositor.OnEnable()`は表示を引き取るために`viewSwitcher.enabled = false`と
+するが，単眼時代はその`ChannelCompositor`自身が同じ`ReplayRawImage`へ描き直していた
+ので問題にならなかった。両眼化で出力先が`LeftRawImage`/`RightRawImage`へ移った結果，
+**`ReplayRawImage`を更新するものが誰もいなくなった**。加えて`LeftCanvas`/`RightCanvas`の
+描画カメラ（`LeftEyeAnchor`/`RightEyeAnchor`）は`stereoTargetEye = Left/Right`
+（`OVRCameraRig.cs:603-604`）でXR/HMD経路へ流れるため，デスクトップのGame画面には
+出てこない。よってGame画面は更新の止まった古いテクスチャを映し続けていた。
+
+これは「HMDの接続は不要」（`ReplayPlayer.cs`クラスコメント）という再生確認シーンの
+存在意義を損なう欠落だった。
+
+**修正**: `ChannelCompositor`に任意のミラー出力先`monitorRawImage`を追加し，
+`rawImage`と同じ`OutputTexture`を渡すようにした（同じRenderTextureを参照させる
+だけなので追加の描画コストは無い）。`ConeGuideSceneUpgrader`は
+`ReplayRawImage`が見つかった場合に限り，**左目用コンポジタにだけ**これを配線する
+（実験シーンには`ReplayRawImage`が無いので`null`のまま影響を受けない）。
+`monitorRawImage`は目ごとに固有の参照なので`rawImage`と同様
+`SyncFromMirrorSource()`の同期対象には含めない。
+
+結果として「HMDでは両眼立体視，Game画面では左目の映像をモニタ」という状態になり，
+HMD未接続でのGameビュー確認が復活した。錐ガイドOFF時は`ChannelCompositor`が無効化
+され`ViewSwitcher`が復帰して`ReplayRawImage`を描き直すため，両者が競合することはない。
