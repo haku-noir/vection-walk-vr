@@ -83,7 +83,7 @@ public class ReplayPlayer : MonoBehaviour
     /// オフの間は ChannelCompositor が無効化され，従来の ViewSwitcher 経路がそのまま動く．
     /// </summary>
     [Tooltip("錐ガイドを使うか（Reswitchモードでのみ有効。オフなら従来どおり）")]
-    public bool coneGuideEnabled = false;
+    public bool coneGuideEnabled = true;
 
     /// <summary>視野として表示している UI（RawImage）</summary>
     [Tooltip("視野として表示しているUI（RawImage）")]
@@ -109,7 +109,7 @@ public class ReplayPlayer : MonoBehaviour
     /// following_results 再生時の表示モード（trajectory 再生時は無視される）
     /// </summary>
     [Tooltip("following_results再生時の表示モード（trajectoryでは無視）")]
-    public DisplayMode displayMode = DisplayMode.AsExperienced;
+    public DisplayMode displayMode = DisplayMode.Reswitch;
 
     /// <summary>再生速度（1 = 実時間）</summary>
     [Tooltip("再生速度（1 = 実時間）")]
